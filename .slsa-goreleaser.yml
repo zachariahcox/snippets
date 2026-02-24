@@ -1,7 +1,0 @@
-# SLSA Go builder config - see https://github.com/slsa-framework/slsa-github-generator/tree/main/internal/builders/go
-version: 1
-goos: linux
-goarch: amd64
-binary: snippets
-ldflags:
-  - -s -w

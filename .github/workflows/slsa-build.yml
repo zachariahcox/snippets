@@ -1,7 +1,4 @@
 # SLSA Build Level 3 compliant build workflow
-# Uses slsa-framework/slsa-github-generator reusable workflow for tamper-proof provenance
-# See: https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-and-reusable-workflows-to-achieve-slsa-v1-build-level-3
-
 name: SLSA Build
 
 on:
@@ -12,6 +9,14 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        include:
+          - config: .github/slsa-goreleaser-linux-amd64.yml
+          - config: .github/slsa-goreleaser-linux-arm64.yml
+          - config: .github/slsa-goreleaser-windows-amd64.yml
+          - config: .github/slsa-goreleaser-darwin-amd64.yml
+          - config: .github/slsa-goreleaser-darwin-arm64.yml
     permissions:
       actions: read
       attestations: write
@@ -21,6 +26,5 @@ jobs:
     with:
       go-version: "1.21"
       go-version-file: go.mod
-      # Upload binary + provenance to GitHub release only when building from a tag
+      config-file: ${{ matrix.config }}
       upload-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
-      config-file: .slsa-goreleaser.yml

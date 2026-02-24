@@ -1,0 +1,7 @@
+# SLSA Go builder config - darwin/amd64
+version: 1
+goos: darwin
+goarch: amd64
+binary: snippets-darwin-amd64
+ldflags:
+  - -s -w

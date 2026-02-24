@@ -1,0 +1,7 @@
+# SLSA Go builder config - windows/amd64
+version: 1
+goos: windows
+goarch: amd64
+binary: snippets-windows-amd64.exe
+ldflags:
+  - -s -w
