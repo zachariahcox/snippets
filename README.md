@@ -25,3 +25,5 @@ snippets --include-subtasks --output-file status.md PROJECT-123
 ```
 
 Use `snippets -h` for all options.
+
+Use `--json` to interop with other tools.
