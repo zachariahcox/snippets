@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +200,68 @@ func TestRenderMarkdownReport_filterSince(t *testing.T) {
 	}
 	if !strings.Contains(out, "New") {
 		t.Error("expected issue updated after since to be included")
+	}
+}
+
+func TestRenderJSONReport(t *testing.T) {
+	issues := []IssueData{
+		{
+			Key:        "A-1",
+			URL:        "https://jira/a",
+			Summary:    "First",
+			StatusName: "in progress",
+			Assignee:   "Alice",
+			Updated:    "2025-01-02",
+		},
+	}
+	out := RenderJSONReport(issues, false, nil, "")
+	if out == "" {
+		t.Fatal("RenderJSONReport returned empty string")
+	}
+	if !json.Valid([]byte(out)) {
+		t.Errorf("output is not valid JSON: %s", out)
+	}
+	var decoded []IssueData
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Errorf("decoded %d issues, want 1", len(decoded))
+	}
+	if decoded[0].Key != "A-1" || decoded[0].Summary != "First" {
+		t.Errorf("decoded issue = %+v, want Key=A-1 Summary=First", decoded[0])
+	}
+}
+
+func TestRenderJSONReport_filterSince(t *testing.T) {
+	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	issues := []IssueData{
+		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
+		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
+	}
+	out := RenderJSONReport(issues, false, &jan1, "")
+	var decoded []IssueData
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Errorf("after filter: %d issues, want 1", len(decoded))
+	}
+	if decoded[0].Summary != "New" {
+		t.Errorf("expected filtered issue Summary=New, got %q", decoded[0].Summary)
+	}
+}
+
+func TestRenderJSONReport_empty(t *testing.T) {
+	out := RenderJSONReport(nil, false, nil, "")
+	if out == "" {
+		t.Fatal("RenderJSONReport returned empty string for nil input")
+	}
+	var decoded []IssueData
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("failed to unmarshal empty output: %v", err)
+	}
+	if len(decoded) != 0 {
+		t.Errorf("decoded %d issues, want 0", len(decoded))
 	}
 }

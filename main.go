@@ -35,6 +35,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -46,6 +47,12 @@ import (
 
 // Default configuration values
 const defaultPageSize = 50
+
+// Version and BuildDate are set via ldflags when building with make
+var (
+	Version   = "dev"
+	BuildDate = "unknown"
+)
 
 // Status categories mapped to emojis
 var statusCategories = map[string]string{
@@ -76,6 +83,15 @@ var statusOrder = []string{
 	"vetting",
 	"new",
 }
+
+// statusPriority maps status name to sort priority (O(1) lookup)
+var statusPriority = func() map[string]int {
+	m := make(map[string]int, len(statusOrder))
+	for i, s := range statusOrder {
+		m[s] = i
+	}
+	return m
+}()
 
 // Custom fields to resolve by name
 var customFields = map[string]string{
@@ -390,16 +406,21 @@ func IsOverdue(statusName string, targetEnd string) bool {
 // GetStatusPriority returns the sort priority for a status
 func GetStatusPriority(statusName string) int {
 	status := strings.ToLower(strings.TrimSpace(statusName))
-	for i, s := range statusOrder {
-		if s == status {
-			return i
-		}
+	if p, ok := statusPriority[status]; ok {
+		return p
 	}
 	return 999
 }
 
 // RenderMarkdownReport renders issues as a markdown report
-func RenderMarkdownReport(issues []IssueData, showParent bool, since *time.Time, title string) string {
+func RenderMarkdownReport(
+	issues []IssueData,
+	showParent bool,
+	since *time.Time,
+	title string) string {
+
+	issues = filterAndSortIssues(issues, since)
+
 	var result []string
 
 	if title == "" {
@@ -415,6 +436,40 @@ func RenderMarkdownReport(issues []IssueData, showParent bool, since *time.Time,
 		result = append(result, "|---|:--|:--|:--|:--|")
 	}
 
+	// Render rows
+	for _, issue := range issues {
+		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
+		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
+		targetEnd := FormatDate(issue.TargetEnd)
+		timestampLink := FormatTimestampWithLink(issue.Updated, issue.URL, false)
+
+		var row string
+		if showParent {
+			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
+				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
+		} else {
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
+				statusWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
+		}
+		result = append(result, row)
+	}
+
+	result = append(result, "\n")
+	return strings.Join(result, "\n")
+}
+
+func RenderJSONReport(issues []IssueData, showParent bool, since *time.Time, title string) string {
+	issues = filterAndSortIssues(issues, since)
+	jsonData, err := json.Marshal(issues)
+	if err != nil {
+		logError("Failed to marshal JSON: %v", err)
+		return ""
+	}
+	return string(jsonData)
+}
+
+func filterAndSortIssues(issues []IssueData, since *time.Time) []IssueData {
 	// Filter issues
 	var filteredIssues []IssueData
 	for _, issue := range issues {
@@ -467,33 +522,20 @@ func RenderMarkdownReport(issues []IssueData, showParent bool, since *time.Time,
 		// By summary
 		return filteredIssues[i].Summary < filteredIssues[j].Summary
 	})
-
-	// Render rows
-	for _, issue := range filteredIssues {
-		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
-		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
-		targetEnd := FormatDate(issue.TargetEnd)
-		timestampLink := FormatTimestampWithLink(issue.Updated, issue.URL, false)
-
-		var row string
-		if showParent {
-			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
-				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
-		} else {
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
-				statusWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
-		}
-		result = append(result, row)
-	}
-
-	result = append(result, "\n")
-	return strings.Join(result, "\n")
+	return filteredIssues
 }
 
 // GenerateReport generates a report of issues
-func GenerateReport(client *JiraClient, issueKeys []string, showParent, showSubtasks, showLinked bool,
-	since *time.Time, outputFile, jqlQuery string) {
+func GenerateReport(
+	client *JiraClient,
+	issueKeys []string,
+	showParent,
+	showSubtasks,
+	showLinked bool,
+	since *time.Time,
+	outputFile string,
+	jsonOutput bool,
+	jqlQuery string) {
 
 	var rootIssues []IssueData
 	var childIssues []IssueData
@@ -564,11 +606,19 @@ func GenerateReport(client *JiraClient, issueKeys []string, showParent, showSubt
 		customTitle = fmt.Sprintf("[%s: %s](%s)", parentKey, parentSummary, parentURL)
 	}
 
-	var markdownReport string
+	var outputData string
 	if showSubtasks || showLinked {
-		markdownReport = RenderMarkdownReport(childIssues, showParent, since, customTitle)
+		if jsonOutput {
+			outputData = RenderJSONReport(childIssues, showParent, since, customTitle)
+		} else {
+			outputData = RenderMarkdownReport(childIssues, showParent, since, customTitle)
+		}
 	} else {
-		markdownReport = RenderMarkdownReport(rootIssues, false, since, customTitle)
+		if jsonOutput {
+			outputData = RenderJSONReport(rootIssues, false, since, customTitle)
+		} else {
+			outputData = RenderMarkdownReport(rootIssues, false, since, customTitle)
+		}
 	}
 
 	// Output
@@ -576,7 +626,7 @@ func GenerateReport(client *JiraClient, issueKeys []string, showParent, showSubt
 		f, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			logError("Error opening file %s: %v", outputFile, err)
-			fmt.Println(markdownReport)
+			fmt.Println(outputData)
 			return
 		}
 		defer f.Close()
@@ -585,9 +635,9 @@ func GenerateReport(client *JiraClient, issueKeys []string, showParent, showSubt
 		if fi.Size() > 0 {
 			f.WriteString("\n\n\n\n")
 		}
-		f.WriteString(markdownReport)
+		f.WriteString(outputData)
 	} else {
-		fmt.Println(markdownReport)
+		fmt.Println(outputData)
 	}
 }
 
@@ -608,6 +658,8 @@ func main() {
 	verboseShort := flag.Bool("v", false, "Enable verbose debug logging (short)")
 	quiet := flag.Bool("quiet", false, "Suppress non-essential output")
 	quietShort := flag.Bool("q", false, "Suppress non-essential output (short)")
+	jsonOutput := flag.Bool("json", false, "Output in JSON format")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: snippets [options] <issue_keys...>
@@ -640,6 +692,11 @@ Examples:
 	}
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("snippets %s (built %s)\n", Version, BuildDate)
+		os.Exit(0)
+	}
 
 	// Merge short flags
 	if *outputFileShort != "" && *outputFile == "" {
@@ -731,7 +788,8 @@ Examples:
 				*includeLinked,
 				since,
 				*outputFile,
-				"")
+				*jsonOutput,
+				*jqlQuery)
 		}
 	} else {
 		GenerateReport(client, issueKeys,
@@ -740,6 +798,7 @@ Examples:
 			*includeLinked,
 			since,
 			*outputFile,
+			*jsonOutput,
 			*jqlQuery)
 	}
 }
