@@ -159,7 +159,7 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 }
 
 func TestRenderMarkdownReport(t *testing.T) {
-	issues := []IssueData{
+	issues := []*IssueData{
 		{
 			Key:        "A-1",
 			URL:        "https://jira/a",
@@ -190,7 +190,7 @@ func TestRenderMarkdownReport(t *testing.T) {
 
 func TestRenderMarkdownReport_filterSince(t *testing.T) {
 	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	issues := []IssueData{
+	issues := []*IssueData{
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
@@ -204,7 +204,7 @@ func TestRenderMarkdownReport_filterSince(t *testing.T) {
 }
 
 func TestRenderJSONReport(t *testing.T) {
-	issues := []IssueData{
+	issues := []*IssueData{
 		{
 			Key:        "A-1",
 			URL:        "https://jira/a",
@@ -221,7 +221,7 @@ func TestRenderJSONReport(t *testing.T) {
 	if !json.Valid([]byte(out)) {
 		t.Errorf("output is not valid JSON: %s", out)
 	}
-	var decoded []IssueData
+	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal output: %v", err)
 	}
@@ -235,12 +235,12 @@ func TestRenderJSONReport(t *testing.T) {
 
 func TestRenderJSONReport_filterSince(t *testing.T) {
 	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	issues := []IssueData{
+	issues := []*IssueData{
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
 	out := RenderJSONReport(issues, false, &jan1, "")
-	var decoded []IssueData
+	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestRenderJSONReport_empty(t *testing.T) {
 	if out == "" {
 		t.Fatal("RenderJSONReport returned empty string for nil input")
 	}
-	var decoded []IssueData
+	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal empty output: %v", err)
 	}

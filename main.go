@@ -99,6 +99,10 @@ var customFields = map[string]string{
 }
 
 // IssueData represents extracted issue data
+type IssueComment struct {
+	Url     string
+	Created string
+}
 type IssueData struct {
 	Key           string
 	URL           string
@@ -114,10 +118,11 @@ type IssueData struct {
 	ParentURL     string
 	Trending      string
 	Emoji         string
+	Comment       IssueComment
 }
 
 // ExtractIssueData extracts relevant data from a Jira issue API response
-func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) IssueData {
+func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
 	fields := getMap(issue, "fields")
 	issueKey := getString(issue, "key")
 
@@ -189,7 +194,7 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 		parentURL = fmt.Sprintf("%s/browse/%s", serverURL, parentKey)
 	}
 
-	return IssueData{
+	return &IssueData{
 		Key:           issueKey,
 		URL:           issueURL,
 		Summary:       summary,
@@ -208,21 +213,41 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 }
 
 // GetIssueDetails fetches issue details from Jira
-func GetIssueDetails(client *JiraClient, issueKey, parentKey, parentSummary string) (*IssueData, error) {
-	logInfo("  - Fetching: %s", issueKey)
+func GetIssue(client *JiraClient, issueKey, parentKey, parentSummary string) (*IssueData, error) {
+	logInfo("Fetching one issue: %s", issueKey)
 	issue, err := client.GetIssue(issueKey)
 	if err != nil {
-		logError("Failed to fetch issue %s: %v", issueKey, err)
+		logError("  - Failed to fetch issue %s: %v", issueKey, err)
+		return nil, err
+	}
+	data := ExtractIssueData(issue, client.Server, parentKey, parentSummary)
+	logInfo("  - Fetched one issue: %s", issueKey)
+	return data, nil
+}
+
+func GetIssuesFromQuery(client *JiraClient, jqlQuery string) ([]*IssueData, error) {
+	logInfo("Executing JQL query: %s", jqlQuery)
+
+	issues := []*IssueData{} // we don't know how many there will be
+
+	jsonBlobs, err := client.SearchIssues(jqlQuery, 1000)
+	if err != nil {
+		logError("JQL query failed: %v", err)
 		return nil, err
 	}
 
-	data := ExtractIssueData(issue, client.Server, parentKey, parentSummary)
-	return &data, nil
+	for _, issueJsonBlob := range jsonBlobs {
+		issueData := ExtractIssueData(issueJsonBlob, client.Server, "", "")
+		issues = append(issues, issueData)
+	}
+
+	logInfo("Found %d issues from JQL query", len(issues))
+	return issues, nil
 }
 
 // GetSubtasks fetches subtasks for a parent issue
-func GetSubtasks(client *JiraClient, parentKey, parentSummary string) []IssueData {
-	var subtasks []IssueData
+func GetSubtasks(client *JiraClient, parentKey, parentSummary string) []*IssueData {
+	var subtasks []*IssueData
 
 	parentIssue, err := client.GetIssue(parentKey)
 	if err != nil {
@@ -239,9 +264,9 @@ func GetSubtasks(client *JiraClient, parentKey, parentSummary string) []IssueDat
 	for _, ref := range subtaskRefs {
 		subtaskKey := getString(ref, "key")
 		if subtaskKey != "" {
-			data, err := GetIssueDetails(client, subtaskKey, parentKey, parentSummary)
+			data, err := GetIssue(client, subtaskKey, parentKey, parentSummary)
 			if err == nil && data != nil {
-				subtasks = append(subtasks, *data)
+				subtasks = append(subtasks, data)
 			}
 		}
 	}
@@ -251,8 +276,8 @@ func GetSubtasks(client *JiraClient, parentKey, parentSummary string) []IssueDat
 }
 
 // GetLinkedIssues fetches linked issues for a parent issue
-func GetLinkedIssues(client *JiraClient, parentKey, parentSummary string) []IssueData {
-	var linked []IssueData
+func GetLinkedIssues(client *JiraClient, parentKey, parentSummary string) []*IssueData {
+	var linked []*IssueData
 
 	parentIssue, err := client.GetIssue(parentKey)
 	if err != nil {
@@ -274,9 +299,9 @@ func GetLinkedIssues(client *JiraClient, parentKey, parentSummary string) []Issu
 		if linkedIssue != nil {
 			linkedKey := getString(linkedIssue, "key")
 			if linkedKey != "" {
-				data, err := GetIssueDetails(client, linkedKey, parentKey, parentSummary)
+				data, err := GetIssue(client, linkedKey, parentKey, parentSummary)
 				if err == nil && data != nil {
-					linked = append(linked, *data)
+					linked = append(linked, data)
 				}
 			}
 		}
@@ -412,66 +437,9 @@ func GetStatusPriority(statusName string) int {
 	return 999
 }
 
-// RenderMarkdownReport renders issues as a markdown report
-func RenderMarkdownReport(
-	issues []IssueData,
-	showParent bool,
-	since *time.Time,
-	title string) string {
-
-	issues = filterAndSortIssues(issues, since)
-
-	var result []string
-
-	if title == "" {
-		title = "Jira Status Report"
-	}
-	result = append(result, fmt.Sprintf("\n### %s, %s", title, time.Now().Format("2006-01-02")))
-
-	if showParent {
-		result = append(result, "\n| status | parent | issue | assignee | target date | last update |")
-		result = append(result, "|---|:--|:--|:--|:--|:--|")
-	} else {
-		result = append(result, "\n| status | issue | assignee | target date | last update |")
-		result = append(result, "|---|:--|:--|:--|:--|")
-	}
-
-	// Render rows
-	for _, issue := range issues {
-		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
-		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
-		targetEnd := FormatDate(issue.TargetEnd)
-		timestampLink := FormatTimestampWithLink(issue.Updated, issue.URL, false)
-
-		var row string
-		if showParent {
-			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
-				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
-		} else {
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
-				statusWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
-		}
-		result = append(result, row)
-	}
-
-	result = append(result, "\n")
-	return strings.Join(result, "\n")
-}
-
-func RenderJSONReport(issues []IssueData, showParent bool, since *time.Time, title string) string {
-	issues = filterAndSortIssues(issues, since)
-	jsonData, err := json.Marshal(issues)
-	if err != nil {
-		logError("Failed to marshal JSON: %v", err)
-		return ""
-	}
-	return string(jsonData)
-}
-
-func filterAndSortIssues(issues []IssueData, since *time.Time) []IssueData {
+func filterAndSortIssues(issues []*IssueData, since *time.Time) []*IssueData {
 	// Filter issues
-	var filteredIssues []IssueData
+	var filteredIssues []*IssueData
 	for _, issue := range issues {
 		if since != nil {
 			timestamp := issue.Updated
@@ -525,6 +493,58 @@ func filterAndSortIssues(issues []IssueData, since *time.Time) []IssueData {
 	return filteredIssues
 }
 
+// RenderMarkdownReport renders issues as a markdown report
+func RenderMarkdownReport(issues []*IssueData, showParent bool, since *time.Time, title string) string {
+	// filter and sort issues
+	issues = filterAndSortIssues(issues, since)
+
+	var result []string
+
+	if title == "" {
+		title = "Jira Status Report"
+	}
+	result = append(result, fmt.Sprintf("\n### %s, %s", title, time.Now().Format("2006-01-02")))
+
+	if showParent {
+		result = append(result, "\n| status | parent | issue | assignee | target date | last update |")
+		result = append(result, "|---|:--|:--|:--|:--|:--|")
+	} else {
+		result = append(result, "\n| status | issue | assignee | target date | last update |")
+		result = append(result, "|---|:--|:--|:--|:--|")
+	}
+
+	// Render rows
+	for _, issue := range issues {
+		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
+		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
+		targetEnd := FormatDate(issue.TargetEnd)
+		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
+		var row string
+		if showParent {
+			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
+				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
+		} else {
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
+				statusWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
+		}
+		result = append(result, row)
+	}
+
+	result = append(result, "\n")
+	return strings.Join(result, "\n")
+}
+
+func RenderJSONReport(issues []*IssueData, showParent bool, since *time.Time, title string) string {
+	issues = filterAndSortIssues(issues, since)
+	jsonData, err := json.Marshal(issues)
+	if err != nil {
+		logError("Failed to marshal JSON: %v", err)
+		return ""
+	}
+	return string(jsonData)
+}
+
 // GenerateReport generates a report of issues
 func GenerateReport(
 	client *JiraClient,
@@ -537,71 +557,70 @@ func GenerateReport(
 	jsonOutput bool,
 	jqlQuery string) {
 
-	var rootIssues []IssueData
-	var childIssues []IssueData
+	var parentIssues []*IssueData
+	var childIssues []*IssueData
 
 	if jqlQuery != "" {
-		logInfo("Executing JQL query: %s", jqlQuery)
-		issues, err := client.SearchIssues(jqlQuery, 1000)
+		issues, err := GetIssuesFromQuery(client, jqlQuery)
 		if err != nil {
 			logError("JQL query failed: %v", err)
 			return
 		}
+		parentIssues = issues
 
-		for _, issue := range issues {
-			issueData := ExtractIssueData(issue, client.Server, "", "")
-			rootIssues = append(rootIssues, issueData)
-
-			if showSubtasks || showLinked {
-				issueKey := getString(issue, "key")
-				parentSummary := issueData.Summary
-
-				if showSubtasks {
-					subtasks := GetSubtasks(client, issueKey, parentSummary)
-					childIssues = append(childIssues, subtasks...)
-				}
-
-				if showLinked {
-					linked := GetLinkedIssues(client, issueKey, parentSummary)
-					childIssues = append(childIssues, linked...)
-				}
-			}
+		// update issue keys
+		issueKeys = make([]string, len(parentIssues))
+		for i, issue := range parentIssues {
+			issueKeys[i] = issue.Key
 		}
-
-		issueKeys = make([]string, len(issues))
-		for i, issue := range issues {
-			issueKeys[i] = getString(issue, "key")
-		}
-		logInfo("Found %d issues from JQL query", len(issueKeys))
 	} else {
-		for _, issueKey := range issueKeys {
-			logInfo("Processing %s...", issueKey)
-			data, err := GetIssueDetails(client, issueKey, "", "")
+		for _, key := range issueKeys {
+			issue, err := GetIssue(client, key, "", "")
 			if err != nil {
+				logError("Failed to get issue %s: %v", key, err)
 				continue
 			}
-			if data != nil {
-				rootIssues = append(rootIssues, *data)
-				parentSummary := data.Summary
+			parentIssues = append(parentIssues, issue)
+		}
+	}
 
-				if showSubtasks {
-					subtasks := GetSubtasks(client, issueKey, parentSummary)
-					childIssues = append(childIssues, subtasks...)
-				}
-
-				if showLinked {
-					linked := GetLinkedIssues(client, issueKey, parentSummary)
-					childIssues = append(childIssues, linked...)
-				}
+	// collect all linked issues
+	for _, issue := range parentIssues {
+		if showSubtasks || showLinked {
+			if showSubtasks {
+				subtasks := GetSubtasks(client, issue.Key, issue.Summary)
+				childIssues = append(childIssues, subtasks...)
 			}
+
+			if showLinked {
+				linked := GetLinkedIssues(client, issue.Key, issue.Summary)
+				childIssues = append(childIssues, linked...)
+			}
+		}
+	}
+
+	// lookup most recent comments for all issues
+	mostRecentComments, err := client.GetMostRecentComments(issueKeys)
+	if err != nil {
+		logError("Failed to get most recent comments: %v", err)
+		return
+	}
+	for _, issue := range parentIssues {
+		commentJson := mostRecentComments[issue.Key]
+		if commentJson == nil {
+			continue
+		}
+		issue.Comment = IssueComment{
+			Url:     getString(commentJson, "self"), // not sure why it's called this!
+			Created: getString(commentJson, "updated"),
 		}
 	}
 
 	// Build custom title if single issue
 	customTitle := ""
-	if len(issueKeys) == 1 && len(rootIssues) > 0 {
+	if len(issueKeys) == 1 && len(parentIssues) > 0 {
 		parentKey := issueKeys[0]
-		parentSummary := rootIssues[0].Summary
+		parentSummary := parentIssues[0].Summary
 		parentURL := fmt.Sprintf("%s/browse/%s", client.Server, parentKey)
 		customTitle = fmt.Sprintf("[%s: %s](%s)", parentKey, parentSummary, parentURL)
 	}
@@ -615,9 +634,9 @@ func GenerateReport(
 		}
 	} else {
 		if jsonOutput {
-			outputData = RenderJSONReport(rootIssues, false, since, customTitle)
+			outputData = RenderJSONReport(parentIssues, false, since, customTitle)
 		} else {
-			outputData = RenderMarkdownReport(rootIssues, false, since, customTitle)
+			outputData = RenderMarkdownReport(parentIssues, false, since, customTitle)
 		}
 	}
 
@@ -772,8 +791,25 @@ Examples:
 		}
 	}
 
+	// parse args
+	server := os.Getenv("JIRA_SERVER")
+	if server == "" {
+		logError("JIRA_SERVER environment variable is not set.\nExample: export JIRA_SERVER=https://mycompany.atlassian.net")
+		os.Exit(1)
+	}
+	apiToken := os.Getenv("JIRA_API_TOKEN")
+	if apiToken == "" {
+		logError("JIRA_API_TOKEN environment variable is not set.\nExample: export JIRA_API_TOKEN=your-token")
+		os.Exit(1)
+	}
+	email := os.Getenv("JIRA_EMAIL")
+	if email == "" {
+		logError("JIRA_EMAIL environment variable is not set.\nExample: export JIRA_EMAIL=you@company.com")
+		os.Exit(1)
+	}
+
 	// Connect to Jira
-	client, err := GetJiraClient()
+	client, err := GetJiraClient(server, email, apiToken)
 	if err != nil {
 		logError("%v", err)
 		os.Exit(1)

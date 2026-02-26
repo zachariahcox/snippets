@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -101,8 +100,8 @@ func (c *JiraClient) doRequest(method, endpoint string, params map[string]string
 	return body, nil
 }
 
-// Get makes a GET request and returns JSON data
-func (c *JiraClient) Get(endpoint string, params map[string]string) (map[string]any, error) {
+// getJson makes a GET request and returns JSON data
+func (c *JiraClient) getJson(endpoint string, params map[string]string) (map[string]any, error) {
 	body, err := c.doRequest("GET", endpoint, params)
 	if err != nil {
 		return nil, err
@@ -116,8 +115,8 @@ func (c *JiraClient) Get(endpoint string, params map[string]string) (map[string]
 	return result, nil
 }
 
-// GetList makes a GET request and returns a JSON array
-func (c *JiraClient) GetList(endpoint string, params map[string]string) ([]map[string]any, error) {
+// getJsonList makes a GET request and returns a JSON array
+func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]map[string]any, error) {
 	body, err := c.doRequest("GET", endpoint, params)
 	if err != nil {
 		return nil, err
@@ -140,12 +139,12 @@ func (c *JiraClient) GetIssue(issueKey string) (map[string]any, error) {
 			fields += "," + id
 		}
 	}
-	return c.Get(fmt.Sprintf("issue/%s", issueKey), map[string]string{"fields": fields})
+	return c.getJson(fmt.Sprintf("issue/%s", issueKey), map[string]string{"fields": fields})
 }
 
-// LoadCustomFields resolves custom field names to IDs
-func (c *JiraClient) LoadCustomFields(fieldNames map[string]string) error {
-	fields, err := c.GetList("field", nil)
+// resolves custom field names to IDs
+func (c *JiraClient) loadCustomFields(fieldNames map[string]string) error {
+	fields, err := c.getJsonList("field", nil)
 	if err != nil {
 		return err
 	}
@@ -164,19 +163,22 @@ func (c *JiraClient) LoadCustomFields(fieldNames map[string]string) error {
 
 // SearchIssues searches for issues using JQL with pagination
 func (c *JiraClient) SearchIssues(jql string, maxResults int) ([]map[string]any, error) {
-	fields := "summary,status,assignee,priority,created,updated"
+	var b strings.Builder
+	b.WriteString("summary,status,assignee,priority,created,updated")
 
 	// Load custom fields first
-	if err := c.LoadCustomFields(customFields); err != nil {
+	if err := c.loadCustomFields(customFields); err != nil {
 		logWarning("Could not load custom fields: %v", err)
 	}
 
 	// Add custom field IDs
 	for _, id := range customFields {
 		if id != "" {
-			fields += "," + id
+			b.WriteString(",")
+			b.WriteString(id)
 		}
 	}
+	fields := b.String()
 
 	var allIssues []map[string]any
 	startAt := 0
@@ -191,7 +193,7 @@ func (c *JiraClient) SearchIssues(jql string, maxResults int) ([]map[string]any,
 		}
 
 		logDebug("Fetching issues: startAt=%d, maxResults=%d", startAt, pageSize)
-		response, err := c.Get("search", params)
+		response, err := c.getJson("search", params)
 		if err != nil {
 			return nil, err
 		}
@@ -222,9 +224,95 @@ func (c *JiraClient) SearchIssues(jql string, maxResults int) ([]map[string]any,
 	return allIssues, nil
 }
 
+// GetComments fetches all comments for an issue
+func (c *JiraClient) GetComments(issueKey string) ([]map[string]any, error) {
+	resp, err := c.getJson(fmt.Sprintf("issue/%s/comment", issueKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	return getMapList(resp, "comments"), nil
+}
+
+// GetMostRecentComments returns a map of issue key to the most recent comment (as a JSON blob).
+// Issues with no comments are omitted from the result.
+// Uses the search API with comment field for bulk fetch when multiple keys are provided.
+func (c *JiraClient) GetMostRecentComments(issueKeys []string) (map[string]map[string]any, error) {
+	result := make(map[string]map[string]any, len(issueKeys))
+	if len(issueKeys) == 0 {
+		return result, nil
+	}
+
+	// Bulk: use search API with key in (...) and comment field
+	if len(issueKeys) > 1 {
+		return c.getMostRecentCommentsBulk(issueKeys)
+	}
+
+	// Single issue: use comment endpoint
+	comments, err := c.GetComments(issueKeys[0])
+	if err != nil {
+		return nil, err
+	}
+	if latest := findLatestComment(comments); latest != nil {
+		result[issueKeys[0]] = latest
+	}
+	return result, nil
+}
+
+// getMostRecentCommentsBulk fetches issues via search API with comment field (one request).
+func (c *JiraClient) getMostRecentCommentsBulk(issueKeys []string) (map[string]map[string]any, error) {
+	result := make(map[string]map[string]any, len(issueKeys))
+
+	// Build JQL: key in (A, B, C)
+	quoted := make([]string, len(issueKeys))
+	for i, k := range issueKeys {
+		quoted[i] = fmt.Sprintf("%q", k)
+	}
+	jql := "key in (" + strings.Join(quoted, ",") + ")"
+
+	params := map[string]string{
+		"jql":        jql,
+		"fields":     "comment",
+		"maxResults": fmt.Sprintf("%d", len(issueKeys)),
+	}
+
+	response, err := c.getJson("search", params)
+	if err != nil {
+		return nil, err
+	}
+
+	issues := getMapList(response, "issues")
+	for _, issue := range issues {
+		key := getString(issue, "key")
+		fields := getMap(issue, "fields")
+		commentObj := getMap(fields, "comment")
+		comments := getMapList(commentObj, "comments")
+		if latest := findLatestComment(comments); latest != nil {
+			result[key] = latest
+		}
+	}
+
+	return result, nil
+}
+
+func findLatestComment(comments []map[string]any) map[string]any {
+	if len(comments) == 0 {
+		return nil
+	}
+	latest := comments[0]
+	latestCreated := getString(latest, "created")
+	for i := 1; i < len(comments); i++ {
+		created := getString(comments[i], "created")
+		if created > latestCreated {
+			latest = comments[i]
+			latestCreated = created
+		}
+	}
+	return latest
+}
+
 // TestConnection tests the connection to Jira
 func (c *JiraClient) TestConnection() bool {
-	_, err := c.Get("myself", nil)
+	_, err := c.getJson("myself", nil)
 	if err != nil {
 		logError("Connection test failed: %v", err)
 		return false
@@ -233,26 +321,9 @@ func (c *JiraClient) TestConnection() bool {
 }
 
 // GetJiraClient creates a Jira client from environment variables
-func GetJiraClient() (*JiraClient, error) {
-	server := os.Getenv("JIRA_SERVER")
-	email := os.Getenv("JIRA_EMAIL")
-	apiToken := os.Getenv("JIRA_API_TOKEN")
-
-	if server == "" {
-		return nil, fmt.Errorf("JIRA_SERVER environment variable is not set.\nExample: export JIRA_SERVER=https://mycompany.atlassian.net")
-	}
-
-	if apiToken == "" {
-		isCloud := strings.Contains(strings.ToLower(server), ".atlassian.net")
-		if isCloud {
-			return nil, fmt.Errorf("JIRA_API_TOKEN environment variable is not set.\nFor Jira Cloud: Generate token at https://id.atlassian.com/manage-profile/security/api-tokens")
-		}
-		return nil, fmt.Errorf("JIRA_API_TOKEN environment variable is not set.\nFor Jira Server/Data Center: Generate a Personal Access Token (PAT) in your Jira profile")
-	}
-
-	isCloud := strings.Contains(strings.ToLower(server), ".atlassian.net")
-	if isCloud && email == "" {
-		return nil, fmt.Errorf("JIRA_EMAIL environment variable is required for Jira Cloud.\nSet it to your Atlassian account email")
+func GetJiraClient(server string, email string, apiToken string) (*JiraClient, error) {
+	if server == "" || apiToken == "" || email == "" {
+		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
 	}
 
 	client, err := NewJiraClient(server, apiToken, email)
@@ -261,10 +332,7 @@ func GetJiraClient() (*JiraClient, error) {
 	}
 
 	if !client.TestConnection() {
-		if !isCloud {
-			return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
-		}
-		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL")
+		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
 	}
 
 	logDebug("Connected to Jira server: %s", server)
