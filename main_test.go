@@ -147,8 +147,8 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 	if data.StatusName != "unknown" {
 		t.Errorf("StatusName = %q, want 'unknown'", data.StatusName)
 	}
-	if data.Assignee != "Unassigned" {
-		t.Errorf("Assignee = %q, want Unassigned", data.Assignee)
+	if data.Assignee != "N/A" {
+		t.Errorf("Assignee = %q, want N/A", data.Assignee)
 	}
 	if data.Priority != "None" {
 		t.Errorf("Priority = %q, want None", data.Priority)
@@ -253,8 +253,9 @@ func TestRenderJSONReport_filterSince(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownReport_filterNeedsUpdate(t *testing.T) {
+func TestRenderMarkdownReport_filterNoCommentSince(t *testing.T) {
 	now := time.Now().UTC()
+	since := now.AddDate(0, 0, -10)
 	recentComment := now.AddDate(0, 0, -1).Format(time.RFC3339) // 1 day ago -> excluded
 	oldComment := now.AddDate(0, 0, -60).Format(time.RFC3339)   // 60 days ago -> included
 	issues := []*IssueData{
@@ -262,19 +263,19 @@ func TestRenderMarkdownReport_filterNeedsUpdate(t *testing.T) {
 		{Key: "X-2", Summary: "Stale, needs update", Comment: IssueComment{Created: oldComment}},
 		{Key: "X-3", Summary: "No comment", Comment: IssueComment{}}, // no comment -> included
 	}
-	cfg := &ReportConfig{NeedsUpdateDays: 30}
+	cfg := &ReportConfig{NoCommentSince: &since}
 	out := RenderMarkdownReport(issues, cfg)
 	if out == "" {
-		t.Error("RenderMarkdownReport returned empty")
+		t.Error("RenderMarkdownReport returned empty string")
 	}
 	if strings.Contains(out, "Recently commented") {
-		t.Error("expected issue with recent comment to be filtered out")
+		t.Error("issues with recent comments should be excluded")
 	}
 	if !strings.Contains(out, "Stale, needs update") {
-		t.Error("expected issue with old comment to be included")
+		t.Error("issues with old comments should be included")
 	}
 	if !strings.Contains(out, "No comment") {
-		t.Error("expected issue with no comment to be included")
+		t.Error("issues with no comments  should be included")
 	}
 }
 

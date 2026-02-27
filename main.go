@@ -121,6 +121,17 @@ type IssueData struct {
 	Comment       IssueComment
 }
 
+// ReportConfig holds options for report generation
+type ReportConfig struct {
+	Title          string
+	ShowChildren   bool
+	Since          *time.Time
+	NoCommentSince *time.Time
+	OutputFile     string
+	JSONOutput     bool
+	JQLQuery       string
+}
+
 // ExtractIssueData extracts relevant data from a Jira issue API response
 func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
 	fields := getMap(issue, "fields")
@@ -138,7 +149,7 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	assigneeObj := getMap(fields, "assignee")
 	assignee := getString(assigneeObj, "displayName")
 	if assignee == "" {
-		assignee = "Unassigned"
+		assignee = "N/A"
 	}
 
 	// Get priority
@@ -440,9 +451,6 @@ func GetStatusPriority(statusName string) int {
 func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	// Filter issues
 	var filteredIssues []*IssueData
-	now := time.Now().UTC()
-	needsUpdateCutoff := now.AddDate(0, 0, -cfg.NeedsUpdateDays)
-
 	for _, issue := range issues {
 		// Exclude issues updated before the since date
 		if cfg.Since != nil {
@@ -460,16 +468,17 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 			}
 		}
 
-		// Exclude issues with a comment within the past N days
-		if cfg.NeedsUpdateDays > 0 && issue.Comment.Created != "" {
+		// Exclude issues with a comment since the "no comment since" date
+		if cfg.NoCommentSince != nil && issue.Comment.Created != "" {
 			commentDate, err := ParseJiraDate(issue.Comment.Created)
-			if err == nil && commentDate.After(needsUpdateCutoff) {
+			if err == nil && commentDate.After(*cfg.NoCommentSince) {
 				continue
 			}
 		}
 
 		filteredIssues = append(filteredIssues, issue)
 	}
+	logInfo("Filtered %d issues", len(issues)-len(filteredIssues))
 
 	// Sort issues
 	sort.Slice(filteredIssues, func(i, j int) bool {
@@ -508,16 +517,14 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 
 // RenderMarkdownReport renders issues as a markdown report
 func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
+	logInfo("Rendering markdown report for %d issues", len(issues))
 	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
 	result = append(result, fmt.Sprintf("\n### %s, %s", cfg.Title, time.Now().Format("2006-01-02")))
 
-	// Include parent column if parent is shown and subtasks or linked are also shown
-	includeParent := cfg.ShowParent && (cfg.ShowSubtasks || cfg.ShowLinked)
-
 	// Render header row
-	if includeParent {
+	if cfg.ShowChildren {
 		result = append(result, "\n| status | parent | issue | assignee | target date | last update |")
 		result = append(result, "|---|:--|:--|:--|:--|:--|")
 	} else {
@@ -535,7 +542,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 		// Render row
 		var row string
-		if includeParent {
+		if cfg.ShowChildren {
 			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
 			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
 				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
@@ -560,24 +567,10 @@ func RenderJSONReport(issues []*IssueData, cfg *ReportConfig) string {
 	return string(jsonData)
 }
 
-// ReportConfig holds options for report generation
-type ReportConfig struct {
-	Title           string
-	ShowParent      bool
-	ShowSubtasks    bool
-	ShowLinked      bool
-	Since           *time.Time
-	NeedsUpdateDays int
-	OutputFile      string
-	JSONOutput      bool
-	JQLQuery        string
-}
-
 // GenerateReport generates a report of issues
 func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
+	logInfo("Generating report titled '%s'", cfg.Title)
 	var parentIssues []*IssueData
-	var childIssues []*IssueData
-
 	if cfg.JQLQuery != "" {
 		issues, err := GetIssuesFromQuery(client, cfg.JQLQuery)
 		if err != nil {
@@ -602,18 +595,14 @@ func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 		}
 	}
 
-	// collect all linked issues
-	for _, issue := range parentIssues {
-		if cfg.ShowSubtasks || cfg.ShowLinked {
-			if cfg.ShowSubtasks {
-				subtasks := GetSubtasks(client, issue.Key, issue.Summary)
-				childIssues = append(childIssues, subtasks...)
-			}
-
-			if cfg.ShowLinked {
-				linked := GetLinkedIssues(client, issue.Key, issue.Summary)
-				childIssues = append(childIssues, linked...)
-			}
+	// collect all child issues
+	var childIssues []*IssueData
+	if cfg.ShowChildren {
+		for _, issue := range parentIssues {
+			subtasks := GetSubtasks(client, issue.Key, issue.Summary)
+			childIssues = append(childIssues, subtasks...)
+			linked := GetLinkedIssues(client, issue.Key, issue.Summary)
+			childIssues = append(childIssues, linked...)
 		}
 	}
 
@@ -653,21 +642,11 @@ func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 		}
 	}
 
-	// Build custom title if single issue
-	if cfg.Title == "" {
-		if len(issueKeys) == 1 && len(parentIssues) > 0 {
-			parentKey := issueKeys[0]
-			parentSummary := parentIssues[0].Summary
-			parentURL := fmt.Sprintf("%s/browse/%s", client.Server, parentKey)
-			cfg.Title = fmt.Sprintf("[%s: %s](%s)", parentKey, parentSummary, parentURL)
-		}
-	}
-
 	var outputData string
 	if cfg.JSONOutput {
-		outputData = RenderJSONReport(childIssues, cfg)
+		outputData = RenderJSONReport(parentIssues, cfg)
 	} else {
-		outputData = RenderMarkdownReport(childIssues, cfg)
+		outputData = RenderMarkdownReport(parentIssues, cfg)
 	}
 
 	// Output
@@ -693,9 +672,7 @@ func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 func main() {
 	// Define flags
 	jqlQuery := flag.String("jql", "", "JQL query to fetch issues (alternative to specifying keys)")
-	includeParent := flag.Bool("include-parent", false, "When showing subtasks/linked, include a parent column")
-	includeSubtasks := flag.Bool("include-subtasks", false, "Include subtasks in the report output")
-	includeLinked := flag.Bool("include-linked", false, "Include linked issues in the report output")
+	children := flag.Bool("children", false, "Render children of directly referenced issues")
 	sinceStr := flag.String("since", "", "Only include issues updated on or after this date (YYYY-MM-DD)")
 	needsUpdate := flag.Int("needs-update", 0, "Exclude issues with a comment in the past N days (0=disabled)")
 	title := flag.String("title", "", "Custom title for the report")
@@ -707,8 +684,6 @@ func main() {
 	useStdinShort := flag.Bool("s", false, "Read issue keys from stdin (short)")
 	verbose := flag.Bool("verbose", false, "Enable verbose debug logging")
 	verboseShort := flag.Bool("v", false, "Enable verbose debug logging (short)")
-	quiet := flag.Bool("quiet", false, "Suppress non-essential output")
-	quietShort := flag.Bool("q", false, "Suppress non-essential output (short)")
 	jsonOutput := flag.Bool("json", false, "Output in JSON format")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
@@ -763,15 +738,10 @@ Examples:
 	if *verboseShort {
 		*verbose = true
 	}
-	if *quietShort {
-		*quiet = true
-	}
 
 	// Set log level
 	if *verbose {
 		logLevel = LogLevelDebug
-	} else if *quiet {
-		logLevel = LogLevelError
 	} else {
 		logLevel = LogLevelWarning
 	}
@@ -813,6 +783,14 @@ Examples:
 		logInfo("Filtering issues updated after %s", since)
 	}
 
+	// parse no comment since date
+	var noCommentSince *time.Time
+	if *needsUpdate > 0 {
+		t := time.Now().UTC().AddDate(0, 0, -*needsUpdate)
+		noCommentSince = &t
+		logInfo("Filtering issues with no comment since %s", noCommentSince)
+	}
+
 	// Remove existing output file
 	if *outputFile != "" {
 		if _, err := os.Stat(*outputFile); err == nil {
@@ -828,7 +806,7 @@ Examples:
 		*title = "Status Report"
 	}
 
-	// parse args
+	// parse credentials
 	server := os.Getenv("JIRA_SERVER")
 	if server == "" {
 		logError("JIRA_SERVER environment variable is not set.\nExample: export JIRA_SERVER=https://mycompany.atlassian.net")
@@ -854,15 +832,13 @@ Examples:
 
 	// Generate report(s)
 	cfg := &ReportConfig{
-		Title:           *title,
-		ShowParent:      *includeParent,
-		ShowSubtasks:    *includeSubtasks,
-		ShowLinked:      *includeLinked,
-		Since:           since,
-		NeedsUpdateDays: *needsUpdate,
-		OutputFile:      *outputFile,
-		JSONOutput:      *jsonOutput,
-		JQLQuery:        *jqlQuery,
+		Title:          *title,
+		ShowChildren:   *children,
+		Since:          since,
+		NoCommentSince: noCommentSince,
+		OutputFile:     *outputFile,
+		JSONOutput:     *jsonOutput,
+		JQLQuery:       *jqlQuery,
 	}
 	if *individual {
 		for _, issueKey := range issueKeys {
