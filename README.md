@@ -5,6 +5,23 @@ Generate status reports for Jira issues via the REST API. Supports JQL queries, 
 ## Installation
 
 Download the latest release: [Releases](https://github.com/zachariahcox/snippets/releases)
+```bash
+tag=$(curl -s https://api.github.com/repos/zachariahcox/snippets/releases/latest | jq -r '.tag_name'
+curl -L -o /usr/local/bin/snippets https://github.com/zachariahcox/snippets/releases/download/$tag/snippets-linux-amd64
+chmod +x /usr/local/bin/snippets
+```
+
+...or better if you have the gh cli
+```bash
+gh release download --repo zachariahcox/snippets --pattern "snippets-linux-amd64"
+```
+
+Install via `make install`
+```bash
+git clone https://github.com/zachariahcox/snippets
+cd snippets
+make build install
+```
 
 ## Usage
 
