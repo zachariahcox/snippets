@@ -437,11 +437,15 @@ func GetStatusPriority(statusName string) int {
 	return 999
 }
 
-func filterAndSortIssues(issues []*IssueData, since *time.Time) []*IssueData {
+func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	// Filter issues
 	var filteredIssues []*IssueData
+	now := time.Now().UTC()
+	needsUpdateCutoff := now.AddDate(0, 0, -cfg.NeedsUpdateDays)
+
 	for _, issue := range issues {
-		if since != nil {
+		// Exclude issues updated before the since date
+		if cfg.Since != nil {
 			timestamp := issue.Updated
 			if timestamp == "" || timestamp == "N/A" {
 				continue
@@ -451,10 +455,19 @@ func filterAndSortIssues(issues []*IssueData, since *time.Time) []*IssueData {
 				logWarning("Could not parse date '%s': %v", timestamp, err)
 				continue
 			}
-			if updateDate.Before(*since) {
+			if updateDate.Before(*cfg.Since) {
 				continue
 			}
 		}
+
+		// Exclude issues with a comment within the past N days
+		if cfg.NeedsUpdateDays > 0 && issue.Comment.Created != "" {
+			commentDate, err := ParseJiraDate(issue.Comment.Created)
+			if err == nil && commentDate.After(needsUpdateCutoff) {
+				continue
+			}
+		}
+
 		filteredIssues = append(filteredIssues, issue)
 	}
 
@@ -494,18 +507,17 @@ func filterAndSortIssues(issues []*IssueData, since *time.Time) []*IssueData {
 }
 
 // RenderMarkdownReport renders issues as a markdown report
-func RenderMarkdownReport(issues []*IssueData, showParent bool, since *time.Time, title string) string {
-	// filter and sort issues
-	issues = filterAndSortIssues(issues, since)
+func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
+	result = append(result, fmt.Sprintf("\n### %s, %s", cfg.Title, time.Now().Format("2006-01-02")))
 
-	if title == "" {
-		title = "Jira Status Report"
-	}
-	result = append(result, fmt.Sprintf("\n### %s, %s", title, time.Now().Format("2006-01-02")))
+	// Include parent column if parent is shown and subtasks or linked are also shown
+	includeParent := cfg.ShowParent && (cfg.ShowSubtasks || cfg.ShowLinked)
 
-	if showParent {
+	// Render header row
+	if includeParent {
 		result = append(result, "\n| status | parent | issue | assignee | target date | last update |")
 		result = append(result, "|---|:--|:--|:--|:--|:--|")
 	} else {
@@ -515,12 +527,15 @@ func RenderMarkdownReport(issues []*IssueData, showParent bool, since *time.Time
 
 	// Render rows
 	for _, issue := range issues {
+		// Format cells
 		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
 		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
 		targetEnd := FormatDate(issue.TargetEnd)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
+
+		// Render row
 		var row string
-		if showParent {
+		if includeParent {
 			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
 			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
 				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
@@ -535,8 +550,8 @@ func RenderMarkdownReport(issues []*IssueData, showParent bool, since *time.Time
 	return strings.Join(result, "\n")
 }
 
-func RenderJSONReport(issues []*IssueData, showParent bool, since *time.Time, title string) string {
-	issues = filterAndSortIssues(issues, since)
+func RenderJSONReport(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
 	jsonData, err := json.Marshal(issues)
 	if err != nil {
 		logError("Failed to marshal JSON: %v", err)
@@ -545,23 +560,26 @@ func RenderJSONReport(issues []*IssueData, showParent bool, since *time.Time, ti
 	return string(jsonData)
 }
 
-// GenerateReport generates a report of issues
-func GenerateReport(
-	client *JiraClient,
-	issueKeys []string,
-	showParent,
-	showSubtasks,
-	showLinked bool,
-	since *time.Time,
-	outputFile string,
-	jsonOutput bool,
-	jqlQuery string) {
+// ReportConfig holds options for report generation
+type ReportConfig struct {
+	Title           string
+	ShowParent      bool
+	ShowSubtasks    bool
+	ShowLinked      bool
+	Since           *time.Time
+	NeedsUpdateDays int
+	OutputFile      string
+	JSONOutput      bool
+	JQLQuery        string
+}
 
+// GenerateReport generates a report of issues
+func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 	var parentIssues []*IssueData
 	var childIssues []*IssueData
 
-	if jqlQuery != "" {
-		issues, err := GetIssuesFromQuery(client, jqlQuery)
+	if cfg.JQLQuery != "" {
+		issues, err := GetIssuesFromQuery(client, cfg.JQLQuery)
 		if err != nil {
 			logError("JQL query failed: %v", err)
 			return
@@ -586,21 +604,30 @@ func GenerateReport(
 
 	// collect all linked issues
 	for _, issue := range parentIssues {
-		if showSubtasks || showLinked {
-			if showSubtasks {
+		if cfg.ShowSubtasks || cfg.ShowLinked {
+			if cfg.ShowSubtasks {
 				subtasks := GetSubtasks(client, issue.Key, issue.Summary)
 				childIssues = append(childIssues, subtasks...)
 			}
 
-			if showLinked {
+			if cfg.ShowLinked {
 				linked := GetLinkedIssues(client, issue.Key, issue.Summary)
 				childIssues = append(childIssues, linked...)
 			}
 		}
 	}
 
-	// lookup most recent comments for all issues
-	mostRecentComments, err := client.GetMostRecentComments(issueKeys)
+	// Collect all issue keys we'll display (for comment fetch)
+	allKeys := make([]string, 0, len(parentIssues)+len(childIssues))
+	for _, p := range parentIssues {
+		allKeys = append(allKeys, p.Key)
+	}
+	for _, c := range childIssues {
+		allKeys = append(allKeys, c.Key)
+	}
+
+	// Lookup most recent comments for all displayed issues
+	mostRecentComments, err := client.GetMostRecentComments(allKeys)
 	if err != nil {
 		logError("Failed to get most recent comments: %v", err)
 		return
@@ -611,40 +638,43 @@ func GenerateReport(
 			continue
 		}
 		issue.Comment = IssueComment{
-			Url:     getString(commentJson, "self"), // not sure why it's called this!
+			Url:     getString(commentJson, "self"),
+			Created: getString(commentJson, "updated"),
+		}
+	}
+	for _, issue := range childIssues {
+		commentJson := mostRecentComments[issue.Key]
+		if commentJson == nil {
+			continue
+		}
+		issue.Comment = IssueComment{
+			Url:     getString(commentJson, "self"),
 			Created: getString(commentJson, "updated"),
 		}
 	}
 
 	// Build custom title if single issue
-	customTitle := ""
-	if len(issueKeys) == 1 && len(parentIssues) > 0 {
-		parentKey := issueKeys[0]
-		parentSummary := parentIssues[0].Summary
-		parentURL := fmt.Sprintf("%s/browse/%s", client.Server, parentKey)
-		customTitle = fmt.Sprintf("[%s: %s](%s)", parentKey, parentSummary, parentURL)
+	if cfg.Title == "" {
+		if len(issueKeys) == 1 && len(parentIssues) > 0 {
+			parentKey := issueKeys[0]
+			parentSummary := parentIssues[0].Summary
+			parentURL := fmt.Sprintf("%s/browse/%s", client.Server, parentKey)
+			cfg.Title = fmt.Sprintf("[%s: %s](%s)", parentKey, parentSummary, parentURL)
+		}
 	}
 
 	var outputData string
-	if showSubtasks || showLinked {
-		if jsonOutput {
-			outputData = RenderJSONReport(childIssues, showParent, since, customTitle)
-		} else {
-			outputData = RenderMarkdownReport(childIssues, showParent, since, customTitle)
-		}
+	if cfg.JSONOutput {
+		outputData = RenderJSONReport(childIssues, cfg)
 	} else {
-		if jsonOutput {
-			outputData = RenderJSONReport(parentIssues, false, since, customTitle)
-		} else {
-			outputData = RenderMarkdownReport(parentIssues, false, since, customTitle)
-		}
+		outputData = RenderMarkdownReport(childIssues, cfg)
 	}
 
 	// Output
-	if outputFile != "" {
-		f, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if cfg.OutputFile != "" {
+		f, err := os.OpenFile(cfg.OutputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			logError("Error opening file %s: %v", outputFile, err)
+			logError("Error opening file %s: %v", cfg.OutputFile, err)
 			fmt.Println(outputData)
 			return
 		}
@@ -667,6 +697,8 @@ func main() {
 	includeSubtasks := flag.Bool("include-subtasks", false, "Include subtasks in the report output")
 	includeLinked := flag.Bool("include-linked", false, "Include linked issues in the report output")
 	sinceStr := flag.String("since", "", "Only include issues updated on or after this date (YYYY-MM-DD)")
+	needsUpdate := flag.Int("needs-update", 0, "Exclude issues with a comment in the past N days (0=disabled)")
+	title := flag.String("title", "", "Custom title for the report")
 	outputFile := flag.String("output-file", "", "Write/append the markdown report to this file")
 	outputFileShort := flag.String("o", "", "Write/append the markdown report to this file (short)")
 	individual := flag.Bool("individual", false, "Generate a separate report section for each issue")
@@ -707,6 +739,7 @@ Examples:
   snippets PROJECT-123 PROJECT-456
   snippets --jql "project = MYPROJ AND status != Done"
   snippets --include-subtasks --since 2025-01-01 PROJECT-123
+  snippets --title "Weekly Status" PROJECT-123 PROJECT-456
 `)
 	}
 
@@ -791,6 +824,10 @@ Examples:
 		}
 	}
 
+	if *title == "" {
+		*title = "Status Report"
+	}
+
 	// parse args
 	server := os.Getenv("JIRA_SERVER")
 	if server == "" {
@@ -816,25 +853,22 @@ Examples:
 	}
 
 	// Generate report(s)
+	cfg := &ReportConfig{
+		Title:           *title,
+		ShowParent:      *includeParent,
+		ShowSubtasks:    *includeSubtasks,
+		ShowLinked:      *includeLinked,
+		Since:           since,
+		NeedsUpdateDays: *needsUpdate,
+		OutputFile:      *outputFile,
+		JSONOutput:      *jsonOutput,
+		JQLQuery:        *jqlQuery,
+	}
 	if *individual {
 		for _, issueKey := range issueKeys {
-			GenerateReport(client, []string{issueKey},
-				*includeParent,
-				*includeSubtasks,
-				*includeLinked,
-				since,
-				*outputFile,
-				*jsonOutput,
-				*jqlQuery)
+			GenerateReport(client, []string{issueKey}, cfg)
 		}
 	} else {
-		GenerateReport(client, issueKeys,
-			*includeParent,
-			*includeSubtasks,
-			*includeLinked,
-			since,
-			*outputFile,
-			*jsonOutput,
-			*jqlQuery)
+		GenerateReport(client, issueKeys, cfg)
 	}
 }

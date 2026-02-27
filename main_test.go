@@ -172,16 +172,14 @@ func TestRenderMarkdownReport(t *testing.T) {
 			Trending:   "done",
 		},
 	}
-	out := RenderMarkdownReport(issues, false, nil, "Test Report")
+	cfg := &ReportConfig{Title: "abc"}
+	out := RenderMarkdownReport(issues, cfg)
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
 	}
-	if !strings.Contains(out, "Test Report") {
+	if !strings.Contains(out, "abc") {
 		t.Errorf("output missing title: %s", out)
 	}
-	// if !strings.Contains(out, "A-1") || !strings.Contains(out, "First") {
-	// 	t.Errorf("output missing key: %s", out)
-	// }
 	// ensure "resolved" is mapped to done
 	if !strings.Contains(out, "🟣 done") {
 		t.Errorf("trending mapping failed: %s", out)
@@ -194,7 +192,8 @@ func TestRenderMarkdownReport_filterSince(t *testing.T) {
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
-	out := RenderMarkdownReport(issues, false, &jan1, "")
+	cfg := &ReportConfig{Since: &jan1}
+	out := RenderMarkdownReport(issues, cfg)
 	if strings.Contains(out, "Old") {
 		t.Error("expected issue updated before since to be filtered out")
 	}
@@ -214,7 +213,8 @@ func TestRenderJSONReport(t *testing.T) {
 			Updated:    "2025-01-02",
 		},
 	}
-	out := RenderJSONReport(issues, false, nil, "")
+	cfg := &ReportConfig{}
+	out := RenderJSONReport(issues, cfg)
 	if out == "" {
 		t.Fatal("RenderJSONReport returned empty string")
 	}
@@ -239,7 +239,8 @@ func TestRenderJSONReport_filterSince(t *testing.T) {
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
-	out := RenderJSONReport(issues, false, &jan1, "")
+	cfg := &ReportConfig{Since: &jan1}
+	out := RenderJSONReport(issues, cfg)
 	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
 		t.Fatalf("failed to unmarshal: %v", err)
@@ -252,8 +253,34 @@ func TestRenderJSONReport_filterSince(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownReport_filterNeedsUpdate(t *testing.T) {
+	now := time.Now().UTC()
+	recentComment := now.AddDate(0, 0, -1).Format(time.RFC3339) // 1 day ago -> excluded
+	oldComment := now.AddDate(0, 0, -60).Format(time.RFC3339)   // 60 days ago -> included
+	issues := []*IssueData{
+		{Key: "X-1", Summary: "Recently commented", Comment: IssueComment{Created: recentComment}},
+		{Key: "X-2", Summary: "Stale, needs update", Comment: IssueComment{Created: oldComment}},
+		{Key: "X-3", Summary: "No comment", Comment: IssueComment{}}, // no comment -> included
+	}
+	cfg := &ReportConfig{NeedsUpdateDays: 30}
+	out := RenderMarkdownReport(issues, cfg)
+	if out == "" {
+		t.Error("RenderMarkdownReport returned empty")
+	}
+	if strings.Contains(out, "Recently commented") {
+		t.Error("expected issue with recent comment to be filtered out")
+	}
+	if !strings.Contains(out, "Stale, needs update") {
+		t.Error("expected issue with old comment to be included")
+	}
+	if !strings.Contains(out, "No comment") {
+		t.Error("expected issue with no comment to be included")
+	}
+}
+
 func TestRenderJSONReport_empty(t *testing.T) {
-	out := RenderJSONReport(nil, false, nil, "")
+	cfg := &ReportConfig{}
+	out := RenderJSONReport(nil, cfg)
 	if out == "" {
 		t.Fatal("RenderJSONReport returned empty string for nil input")
 	}
