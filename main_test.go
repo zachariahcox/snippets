@@ -186,6 +186,40 @@ func TestRenderMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownReport_children(t *testing.T) {
+	// Child issues with parent info - should render parent column when ShowChildren=true
+	issues := []*IssueData{
+		{
+			Key:           "PROJ-123-1",
+			URL:           "https://jira/browse/PROJ-123-1",
+			Summary:       "Subtask one",
+			StatusName:    "in progress",
+			Assignee:      "Bob",
+			ParentKey:     "PROJ-123",
+			ParentSummary: "Parent epic",
+			ParentURL:     "https://jira/browse/PROJ-123",
+			TargetEnd:     "2025-02-01",
+			Updated:       "2025-01-15",
+			Emoji:         "🟢",
+			Trending:      "in progress",
+		},
+	}
+	cfg := &ReportConfig{ShowChildren: true, Title: "Children Report"}
+	out := RenderMarkdownReport(issues, cfg)
+	if out == "" {
+		t.Error("RenderMarkdownReport returned empty string")
+	}
+	if !strings.Contains(out, "| status | parent | issue |") {
+		t.Error("expected parent column header when ShowChildren=true")
+	}
+	if !strings.Contains(out, "Subtask one") {
+		t.Error("output missing child summary")
+	}
+	if !strings.Contains(out, "PROJ-123") {
+		t.Error("output missing parent key")
+	}
+}
+
 func TestRenderMarkdownReport_filterSince(t *testing.T) {
 	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	issues := []*IssueData{

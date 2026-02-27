@@ -521,7 +521,9 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
-	result = append(result, fmt.Sprintf("\n### %s, %s", cfg.Title, time.Now().Format("2006-01-02")))
+	result = append(result, fmt.Sprintf("\n### %s", cfg.Title))
+	result = append(result, fmt.Sprintf("generated at: %s", time.Now().Format(time.RFC3339)))
+	result = append(result, fmt.Sprintf("row count: %d", len(issues)))
 
 	// Render header row
 	if cfg.ShowChildren {
@@ -621,32 +623,34 @@ func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 		logError("Failed to get most recent comments: %v", err)
 		return
 	}
-	for _, issue := range parentIssues {
-		commentJson := mostRecentComments[issue.Key]
-		if commentJson == nil {
-			continue
-		}
-		issue.Comment = IssueComment{
-			Url:     getString(commentJson, "self"),
-			Created: getString(commentJson, "updated"),
-		}
-	}
-	for _, issue := range childIssues {
-		commentJson := mostRecentComments[issue.Key]
-		if commentJson == nil {
-			continue
-		}
-		issue.Comment = IssueComment{
-			Url:     getString(commentJson, "self"),
-			Created: getString(commentJson, "updated"),
+	for _, s := range [][]*IssueData{parentIssues, childIssues} {
+		for _, issue := range s {
+			commentJson := mostRecentComments[issue.Key]
+			if commentJson == nil {
+				continue
+			}
+			commentId := getString(commentJson, "id")
+			issue.Comment = IssueComment{
+				Url:     fmt.Sprintf("%s?focusedId=%s&page=com.atlassian.jira.plugin.system.issuetabpanels%%3Acomment-tabpanel#comment-%s", issue.URL, commentId, commentId),
+				Created: getString(commentJson, "updated"),
+			}
 		}
 	}
 
+	// Render output
 	var outputData string
 	if cfg.JSONOutput {
-		outputData = RenderJSONReport(parentIssues, cfg)
+		if cfg.ShowChildren {
+			outputData = RenderJSONReport(childIssues, cfg)
+		} else {
+			outputData = RenderJSONReport(parentIssues, cfg)
+		}
 	} else {
-		outputData = RenderMarkdownReport(parentIssues, cfg)
+		if cfg.ShowChildren {
+			outputData = RenderMarkdownReport(childIssues, cfg)
+		} else {
+			outputData = RenderMarkdownReport(parentIssues, cfg)
+		}
 	}
 
 	// Output
@@ -803,7 +807,7 @@ Examples:
 	}
 
 	if *title == "" {
-		*title = "Status Report"
+		*title = "Snippets!"
 	}
 
 	// parse credentials

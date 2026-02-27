@@ -233,27 +233,43 @@ func (c *JiraClient) GetComments(issueKey string) ([]map[string]any, error) {
 	return getMapList(resp, "comments"), nil
 }
 
+const commentBatchSize = 50
+
 // GetMostRecentComments returns a map of issue key to the most recent comment (as a JSON blob).
 // Issues with no comments are omitted from the result.
-// Uses the search API with comment field for bulk fetch when multiple keys are provided.
+// Fetches in batches of at most commentBatchSize issue keys.
 func (c *JiraClient) GetMostRecentComments(issueKeys []string) (map[string]map[string]any, error) {
 	result := make(map[string]map[string]any, len(issueKeys))
 	if len(issueKeys) == 0 {
 		return result, nil
 	}
 
-	// Bulk: use search API with key in (...) and comment field
-	if len(issueKeys) > 1 {
-		return c.getMostRecentCommentsBulk(issueKeys)
+	// Single issue: use comment endpoint
+	if len(issueKeys) == 1 {
+		comments, err := c.GetComments(issueKeys[0])
+		if err != nil {
+			return nil, err
+		}
+		if latest := findLatestComment(comments); latest != nil {
+			result[issueKeys[0]] = latest
+		}
+		return result, nil
 	}
 
-	// Single issue: use comment endpoint
-	comments, err := c.GetComments(issueKeys[0])
-	if err != nil {
-		return nil, err
-	}
-	if latest := findLatestComment(comments); latest != nil {
-		result[issueKeys[0]] = latest
+	// Bulk: fetch in batches of commentBatchSize
+	for i := 0; i < len(issueKeys); i += commentBatchSize {
+		end := i + commentBatchSize
+		if end > len(issueKeys) {
+			end = len(issueKeys)
+		}
+		batch := issueKeys[i:end]
+		batchResult, err := c.getMostRecentCommentsBulk(batch)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range batchResult {
+			result[k] = v
+		}
 	}
 	return result, nil
 }

@@ -37,9 +37,11 @@ install:
 	@os_arch=$$(go env GOOS)/$$(go env GOARCH); \
 		bin_suffix=$$(if [ "$$(go env GOOS)" = "windows" ]; then echo ".exe"; else echo ""; fi); \
 		cp $(BUILD_DIR)/$$os_arch/$(BINARY_NAME)$$bin_suffix $(INSTALL_DIR)/$(BINARY_NAME)$$bin_suffix
+	echo "Installed $(BINARY_NAME) to $(INSTALL_DIR)"
 
 # uninstall the binary
 uninstall:
 	@local_bin_name=$(INSTALL_DIR)/$(BINARY_NAME)$$(if [ "$$(go env GOOS)" = "windows" ]; then echo ".exe"; else echo ""; fi);\
 	echo "rm -f $$local_bin_name";\
 	rm -f $$local_bin_name
+	echo "Uninstalled $(BINARY_NAME) from $(INSTALL_DIR)"
