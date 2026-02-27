@@ -14,6 +14,7 @@ chmod +x /usr/local/bin/snippets
 ...or better if you have the gh cli
 ```bash
 gh release download --repo zachariahcox/snippets --pattern "snippets-linux-amd64"
+sudo install -m 755 snippets-linux-amd64 /usr/local/bin/snippets
 ```
 
 Install via `make install`
