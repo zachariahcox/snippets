@@ -327,3 +327,153 @@ func TestRenderJSONReport_empty(t *testing.T) {
 		t.Errorf("decoded %d issues, want 0", len(decoded))
 	}
 }
+
+func TestRenderCSVReport(t *testing.T) {
+	issues := []*IssueData{
+		{
+			Key:        "A-1",
+			URL:        "https://jira/a",
+			Summary:    "First issue",
+			StatusName: "in progress",
+			Assignee:   "Alice",
+			TargetEnd:  "2025-02-01",
+			Updated:    "2025-01-15",
+			Emoji:      "🟢",
+			Trending:   "in progress",
+		},
+	}
+	cfg := &ReportConfig{}
+	out := RenderCSVReport(issues, cfg)
+	if out == "" {
+		t.Fatal("RenderCSVReport returned empty string")
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Errorf("expected header + at least 1 row, got %d lines", len(lines))
+	}
+	if !strings.Contains(out, "🐱") {
+		t.Error("expected CSV output to contain separator 🐱")
+	}
+	if !strings.Contains(out, "First issue") {
+		t.Error("expected output to contain issue summary")
+	}
+	if !strings.Contains(out, "status") {
+		t.Error("expected header row with status column")
+	}
+}
+
+func TestRenderCSVReport_children(t *testing.T) {
+	issues := []*IssueData{
+		{
+			Key:       "PROJ-123-1",
+			Summary:   "Subtask",
+			ParentKey: "PROJ-123",
+			Assignee:  "Bob",
+			Emoji:     "🟢",
+			Trending:  "in progress",
+		},
+	}
+	cfg := &ReportConfig{ShowChildren: true}
+	out := RenderCSVReport(issues, cfg)
+	if !strings.Contains(out, "parent") {
+		t.Error("expected parent column when ShowChildren=true")
+	}
+	if !strings.Contains(out, "PROJ-123") {
+		t.Error("expected parent key in output")
+	}
+}
+
+func TestRenderCSVReport_escapeSeparator(t *testing.T) {
+	issues := []*IssueData{
+		{
+			Summary:  "Contains🐱emoji",
+			Emoji:    "🟢",
+			Trending: "in progress",
+		},
+	}
+	cfg := &ReportConfig{}
+	out := RenderCSVReport(issues, cfg)
+	// Field with separator should be quoted
+	if !strings.Contains(out, `"Contains🐱emoji"`) {
+		t.Errorf("expected quoted field for value containing separator, got: %s", out)
+	}
+}
+
+func TestRenderSlackReport(t *testing.T) {
+	issues := []*IssueData{
+		{
+			Key:       "A-1",
+			URL:       "https://jira/browse/A-1",
+			Summary:   "First issue",
+			Emoji:     "🟢",
+			Trending:  "in progress",
+			TargetEnd: "2025-02-01",
+			Comment:   IssueComment{Url: "https://jira/comment/1", Created: "2025-01-15"},
+		},
+		{
+			Key:       "A-2",
+			URL:       "https://jira/browse/A-2",
+			Summary:   "Second issue",
+			TargetEnd: "2025-02-02",
+			Emoji:     "🟣",
+			Trending:  "done",
+		},
+	}
+	cfg := &ReportConfig{}
+	out := RenderSlackReport(issues, cfg)
+	if !strings.HasPrefix(out, "1. ") {
+		t.Errorf("expected numbered list, got: %s", out)
+	}
+	if !strings.Contains(out, "[First issue](https://jira/browse/A-1)") {
+		t.Error("expected summary link in output")
+	}
+	if !strings.Contains(out, "([last update](https://jira/comment/1))") {
+		t.Error("expected update link for first issue")
+	}
+}
+
+func TestRenderURLReport(t *testing.T) {
+	issues := []*IssueData{
+		{Key: "SCM-1079"},
+		{Key: "SCM-3791"},
+	}
+	cfg := &ReportConfig{}
+	out := RenderURLReport("https://jirasw.nvidia.com", issues, cfg)
+	if out == "" {
+		t.Fatal("RenderURLReport returned empty string")
+	}
+	if !strings.Contains(out, "jql=") {
+		t.Error("expected jql param in URL")
+	}
+	if !strings.Contains(out, "SCM-1079") || !strings.Contains(out, "SCM-3791") {
+		t.Error("expected issue keys in URL")
+	}
+	if !strings.Contains(out, "order+by+assignee+ASC") {
+		t.Error("expected order by assignee in JQL")
+	}
+}
+
+func TestRenderURLReport_empty(t *testing.T) {
+	cfg := &ReportConfig{}
+	out := RenderURLReport("https://jira.example.com", nil, cfg)
+	if out != "" {
+		t.Errorf("expected empty string for no issues, got %q", out)
+	}
+}
+
+func TestFilterAndSortIssues_skipsNil(t *testing.T) {
+	// Should not panic when slice contains nil
+	issues := []*IssueData{
+		nil,
+		{Key: "X-1", Summary: "Valid", Updated: "2025-01-15"},
+		nil,
+	}
+	cfg := &ReportConfig{}
+	out := filterAndSortIssues(issues, cfg)
+	if len(out) != 1 {
+		t.Errorf("expected 1 issue after filtering nils, got %d", len(out))
+	}
+	if out[0].Key != "X-1" {
+		t.Errorf("expected X-1, got %s", out[0].Key)
+	}
+}

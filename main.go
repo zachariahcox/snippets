@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -129,6 +130,9 @@ type ReportConfig struct {
 	NoCommentSince *time.Time
 	OutputFile     string
 	JSONOutput     bool
+	CSVOutput      bool
+	SlackOutput    bool
+	URLOutput      bool
 	JQLQuery       string
 }
 
@@ -452,6 +456,9 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	// Filter issues
 	var filteredIssues []*IssueData
 	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
 		// Exclude issues updated before the since date
 		if cfg.Since != nil {
 			timestamp := issue.Updated
@@ -522,8 +529,8 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	var result []string
 	result = append(result, fmt.Sprintf("\n### %s", cfg.Title))
-	result = append(result, fmt.Sprintf("generated at: %s", time.Now().Format(time.RFC3339)))
-	result = append(result, fmt.Sprintf("row count: %d", len(issues)))
+	result = append(result, fmt.Sprintf("* generated at: %s", time.Now().Format(time.RFC3339)))
+	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
 	// Render header row
 	if cfg.ShowChildren {
@@ -567,6 +574,99 @@ func RenderJSONReport(issues []*IssueData, cfg *ReportConfig) string {
 		return ""
 	}
 	return string(jsonData)
+}
+
+const csvSep = "🐱"
+
+func escapeCSVField(s string) string {
+	if strings.Contains(s, csvSep) || strings.Contains(s, "\n") || strings.Contains(s, `"`) {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
+func RenderCSVReport(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
+
+	var result []string
+	if cfg.ShowChildren {
+		result = append(result, strings.Join([]string{
+			escapeCSVField("status"),
+			escapeCSVField("parent"),
+			escapeCSVField("issue"),
+			escapeCSVField("assignee"),
+			escapeCSVField("target date"),
+			escapeCSVField("last update"),
+		}, csvSep))
+	} else {
+		result = append(result, strings.Join([]string{
+			escapeCSVField("status"),
+			escapeCSVField("issue"),
+			escapeCSVField("assignee"),
+			escapeCSVField("target date"),
+			escapeCSVField("last update"),
+		}, csvSep))
+	}
+
+	for _, issue := range issues {
+		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
+		targetEnd := FormatDate(issue.TargetEnd)
+		lastUpdate := issue.Comment.Created
+		if lastUpdate == "" {
+			lastUpdate = "N/A"
+		}
+
+		if cfg.ShowChildren {
+			result = append(result, strings.Join([]string{
+				escapeCSVField(statusWithEmoji),
+				escapeCSVField(issue.ParentKey),
+				escapeCSVField(issue.Summary),
+				escapeCSVField(issue.Assignee),
+				escapeCSVField(targetEnd),
+				escapeCSVField(lastUpdate),
+			}, csvSep))
+		} else {
+			result = append(result, strings.Join([]string{
+				escapeCSVField(statusWithEmoji),
+				escapeCSVField(issue.Summary),
+				escapeCSVField(issue.Assignee),
+				escapeCSVField(targetEnd),
+				escapeCSVField(lastUpdate),
+			}, csvSep))
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
+// RenderSlackReport renders issues as a Slack-formatted numbered list
+func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
+
+	var result []string
+	for i, issue := range issues {
+		line := fmt.Sprintf("%d. %s [%s](%s), (due %s)", i+1, issue.Emoji, issue.Summary, issue.URL, FormatDate(issue.TargetEnd))
+		if issue.Comment.Url != "" {
+			line += fmt.Sprintf(" ([last update](%s))", issue.Comment.Url)
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n")
+}
+
+// RenderURLReport emits a single Jira issues URL with filtered keys as JQL
+func RenderURLReport(serverURL string, issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
+	if len(issues) == 0 {
+		return ""
+	}
+	keys := make([]string, len(issues))
+	for i, issue := range issues {
+		keys[i] = issue.Key
+	}
+	jql := fmt.Sprintf("key in (%s) order by assignee ASC", strings.Join(keys, ", "))
+	base := strings.TrimSuffix(serverURL, "/")
+	params := url.Values{"jql": {jql}}
+	return base + "/issues/?" + params.Encode()
 }
 
 // GenerateReport generates a report of issues
@@ -639,18 +739,20 @@ func GenerateReport(client *JiraClient, issueKeys []string, cfg *ReportConfig) {
 
 	// Render output
 	var outputData string
+	issuesToRender := parentIssues
+	if cfg.ShowChildren {
+		issuesToRender = childIssues
+	}
 	if cfg.JSONOutput {
-		if cfg.ShowChildren {
-			outputData = RenderJSONReport(childIssues, cfg)
-		} else {
-			outputData = RenderJSONReport(parentIssues, cfg)
-		}
+		outputData = RenderJSONReport(issuesToRender, cfg)
+	} else if cfg.CSVOutput {
+		outputData = RenderCSVReport(issuesToRender, cfg)
+	} else if cfg.SlackOutput {
+		outputData = RenderSlackReport(issuesToRender, cfg)
+	} else if cfg.URLOutput {
+		outputData = RenderURLReport(client.Server, issuesToRender, cfg)
 	} else {
-		if cfg.ShowChildren {
-			outputData = RenderMarkdownReport(childIssues, cfg)
-		} else {
-			outputData = RenderMarkdownReport(parentIssues, cfg)
-		}
+		outputData = RenderMarkdownReport(issuesToRender, cfg)
 	}
 
 	// Output
@@ -689,6 +791,9 @@ func main() {
 	verbose := flag.Bool("verbose", false, "Enable verbose debug logging")
 	verboseShort := flag.Bool("v", false, "Enable verbose debug logging (short)")
 	jsonOutput := flag.Bool("json", false, "Output in JSON format")
+	csvOutput := flag.Bool("csv", false, "Output in CSV format ('cat separated value': 🐱)")
+	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
+	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Usage = func() {
@@ -842,6 +947,9 @@ Examples:
 		NoCommentSince: noCommentSince,
 		OutputFile:     *outputFile,
 		JSONOutput:     *jsonOutput,
+		CSVOutput:      *csvOutput,
+		SlackOutput:    *slackOutput,
+		URLOutput:      *urlOutput,
 		JQLQuery:       *jqlQuery,
 	}
 	if *individual {
