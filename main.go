@@ -377,7 +377,7 @@ Examples:
 	}
 
 	// Connect to Jira
-	client, err := NewJiraClient(server, email, apiToken)
+	client, err := NewJiraClient(server, apiToken, email)
 	if err != nil {
 		logError("%v", err)
 		os.Exit(1)
