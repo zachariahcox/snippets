@@ -11,7 +11,7 @@ import (
 )
 
 func RenderReport(parentIssues []*IssueData, childIssues []*IssueData, cfg *ReportConfig) {
-	if parentIssues == nil || childIssues == nil || cfg == nil {
+	if cfg == nil || (parentIssues == nil && childIssues == nil) {
 		return
 	}
 
