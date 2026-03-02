@@ -21,8 +21,69 @@ type JiraClient struct {
 	HTTPClient *http.Client
 }
 
+// Status categories mapped to emojis
+var statusCategories = map[string]string{
+	"done":           "🟣",
+	"closed":         "🟣",
+	"resolved":       "🟣",
+	"in progress":    "🟢",
+	"at risk":        "🟡",
+	"off track":      "🔴",
+	"blocked":        "🔴",
+	"not started":    "⚪",
+	"ready for work": "⚪",
+	"vetting":        "⚪",
+	"new":            "⚪",
+}
+
+// statusOrder defines the sort priority for statuses
+var statusOrder = []string{
+	"done",
+	"closed",
+	"resolved",
+	"in progress",
+	"at risk",
+	"off track",
+	"blocked",
+	"not started",
+	"ready for work",
+	"vetting",
+	"new",
+}
+
+// Custom fields to resolve by name
+var customFields = map[string]string{
+	"Target end": "",
+}
+
+// IssueData represents extracted issue data
+type IssueComment struct {
+	Url     string
+	Created string
+}
+type IssueData struct {
+	Key           string
+	URL           string
+	Summary       string
+	StatusName    string
+	Assignee      string
+	Priority      string
+	Created       string
+	Updated       string
+	TargetEnd     string
+	ParentKey     string
+	ParentSummary string
+	ParentURL     string
+	Trending      string
+	Emoji         string
+	Comment       IssueComment
+}
+
 // NewJiraClient creates a new Jira client
 func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
+	if server == "" || apiToken == "" || email == "" {
+		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
+	}
 	server = strings.TrimRight(server, "/")
 	isCloud := strings.Contains(strings.ToLower(server), ".atlassian.net")
 
@@ -37,101 +98,220 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 		logDebug("Using Jira Server/Data Center authentication (API v%s)", apiVersion)
 	}
 
-	return &JiraClient{
+	client := &JiraClient{
 		Server:     server,
 		Email:      email,
 		APIToken:   apiToken,
 		APIVersion: apiVersion,
 		IsCloud:    isCloud,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-	}, nil
+	}
+
+	if !client.TestConnection() {
+		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
+	}
+
+	logDebug("Connected to Jira server: %s", server)
+	return client, nil
 }
 
-// doRequest makes an authenticated request to the Jira API
-func (c *JiraClient) doRequest(method, endpoint string, params map[string]string) ([]byte, error) {
-	baseURL := fmt.Sprintf("%s/rest/api/%s/%s", c.Server, c.APIVersion, strings.TrimLeft(endpoint, "/"))
+// ExtractIssueData extracts relevant data from a Jira issue API response
+func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
+	fields := getMap(issue, "fields")
+	issueKey := getString(issue, "key")
 
-	// Add query params
-	if len(params) > 0 {
-		values := url.Values{}
-		for k, v := range params {
-			values.Set(k, v)
+	// Get status
+	statusObj := getMap(fields, "status")
+	statusName := getString(statusObj, "name")
+	if statusName == "" {
+		statusName = "Unknown"
+	}
+	statusName = strings.ToLower(strings.TrimSpace(statusName))
+
+	// Get assignee
+	assigneeObj := getMap(fields, "assignee")
+	assignee := getString(assigneeObj, "displayName")
+	if assignee == "" {
+		assignee = "N/A"
+	}
+
+	// Get priority
+	priorityObj := getMap(fields, "priority")
+	priority := getString(priorityObj, "name")
+	if priority == "" {
+		priority = "None"
+	}
+
+	// Get dates
+	created := getString(fields, "created")
+	updated := getString(fields, "updated")
+
+	// Get target end from custom field
+	targetEnd := ""
+	if customFields["Target end"] != "" {
+		targetEnd = getString(fields, customFields["Target end"])
+	}
+
+	// Get summary
+	summary := getString(fields, "summary")
+
+	// Build issue URL
+	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
+
+	// Get trending
+	trending := "on track"
+	switch statusName {
+	case "done", "closed", "resolved":
+		trending = "done"
+	case "not started", "ready for work", "vetting", "new":
+		trending = "not started"
+	default:
+		trending = statusName
+	}
+
+	// Get emoji
+	emoji := "❓"
+	if value, ok := statusCategories[strings.ToLower(strings.TrimSpace(statusName))]; ok {
+		emoji = value
+	}
+
+	// override with due date info no matter what status
+	if IsStale(statusName, targetEnd) {
+		emoji = "🔴"
+		trending = "overdue"
+	}
+
+	// Handle parent info
+	if parentKey == "" {
+		parentKey = issueKey
+	}
+	if parentSummary == "" {
+		parentSummary = summary
+	}
+	parentURL := issueURL
+	if parentKey != issueKey {
+		parentURL = fmt.Sprintf("%s/browse/%s", serverURL, parentKey)
+	}
+
+	return &IssueData{
+		Key:           issueKey,
+		URL:           issueURL,
+		Summary:       summary,
+		StatusName:    statusName,
+		Assignee:      assignee,
+		Priority:      priority,
+		Created:       created,
+		Updated:       updated,
+		TargetEnd:     targetEnd,
+		ParentKey:     parentKey,
+		ParentSummary: parentSummary,
+		ParentURL:     parentURL,
+		Trending:      trending,
+		Emoji:         emoji,
+	}
+}
+
+// GetIssue fetches issue details from Jira
+func (client *JiraClient) GetIssue(issueKey, parentKey, parentSummary string) (*IssueData, error) {
+	logInfo("Fetching one issue: %s", issueKey)
+	issue, err := client.getIssue(issueKey)
+	if err != nil {
+		logError("  - Failed to fetch issue %s: %v", issueKey, err)
+		return nil, err
+	}
+	data := ExtractIssueData(issue, client.Server, parentKey, parentSummary)
+	logInfo("  - Fetched one issue: %s", issueKey)
+	return data, nil
+}
+
+func (client *JiraClient) GetIssuesFromQuery(jqlQuery string) ([]*IssueData, error) {
+	logInfo("Executing JQL query: %s", jqlQuery)
+
+	issues := []*IssueData{} // we don't know how many there will be
+
+	jsonBlobs, err := client.searchIssues(jqlQuery, 1000)
+	if err != nil {
+		logError("JQL query failed: %v", err)
+		return nil, err
+	}
+
+	for _, issueJsonBlob := range jsonBlobs {
+		issueData := ExtractIssueData(issueJsonBlob, client.Server, "", "")
+		issues = append(issues, issueData)
+	}
+
+	logInfo("Found %d issues from JQL query", len(issues))
+	return issues, nil
+}
+
+// GetSubtasks fetches subtasks for a parent issue
+func (client *JiraClient) GetSubtasks(parentKey, parentSummary string) []*IssueData {
+	var subtasks []*IssueData
+
+	parentIssue, err := client.getIssue(parentKey)
+	if err != nil {
+		logError("Failed to get subtasks for %s: %v", parentKey, err)
+		return subtasks
+	}
+
+	fields := getMap(parentIssue, "fields")
+	if parentSummary == "" {
+		parentSummary = getString(fields, "summary")
+	}
+
+	subtaskRefs := getMapList(fields, "subtasks")
+	for _, ref := range subtaskRefs {
+		subtaskKey := getString(ref, "key")
+		if subtaskKey != "" {
+			data, err := client.GetIssue(subtaskKey, parentKey, parentSummary)
+			if err == nil && data != nil {
+				subtasks = append(subtasks, data)
+			}
 		}
-		baseURL += "?" + values.Encode()
 	}
 
-	logDebug("Request: %s %s", method, baseURL)
-
-	req, err := http.NewRequest(method, baseURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-
-	if c.IsCloud {
-		// Basic auth with email:token
-		auth := base64.StdEncoding.EncodeToString([]byte(c.Email + ":" + c.APIToken))
-		req.Header.Set("Authorization", "Basic "+auth)
-	} else {
-		// Bearer token (PAT)
-		req.Header.Set("Authorization", "Bearer "+c.APIToken)
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	logDebug("Response: %d", resp.StatusCode)
-
-	if resp.StatusCode >= 400 {
-		logError("API error: %d - %s", resp.StatusCode, truncate(string(body), 500))
-		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
-	}
-
-	return body, nil
+	logInfo("  Found %d subtasks for %s", len(subtasks), parentKey)
+	return subtasks
 }
 
-// getJson makes a GET request and returns JSON data
-func (c *JiraClient) getJson(endpoint string, params map[string]string) (map[string]any, error) {
-	body, err := c.doRequest("GET", endpoint, params)
+// GetLinkedIssues fetches linked issues for a parent issue
+func (client *JiraClient) GetLinkedIssues(parentKey, parentSummary string) []*IssueData {
+	var linked []*IssueData
+
+	parentIssue, err := client.getIssue(parentKey)
 	if err != nil {
-		return nil, err
+		logError("Failed to get linked issues for %s: %v", parentKey, err)
+		return linked
 	}
 
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+	fields := getMap(parentIssue, "fields")
+	if parentSummary == "" {
+		parentSummary = getString(fields, "summary")
 	}
 
-	return result, nil
+	issueLinks := getMapList(fields, "issuelinks")
+	for _, link := range issueLinks {
+		linkedIssue := getMap(link, "outwardIssue")
+		if linkedIssue == nil {
+			linkedIssue = getMap(link, "inwardIssue")
+		}
+		if linkedIssue != nil {
+			linkedKey := getString(linkedIssue, "key")
+			if linkedKey != "" {
+				data, err := client.GetIssue(linkedKey, parentKey, parentSummary)
+				if err == nil && data != nil {
+					linked = append(linked, data)
+				}
+			}
+		}
+	}
+
+	logInfo("  Found %d linked issues for %s", len(linked), parentKey)
+	return linked
 }
 
-// getJsonList makes a GET request and returns a JSON array
-func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]map[string]any, error) {
-	body, err := c.doRequest("GET", endpoint, params)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// GetIssue fetches a single issue by key
-func (c *JiraClient) GetIssue(issueKey string) (map[string]any, error) {
+// getIssue fetches a single issue by key
+func (c *JiraClient) getIssue(issueKey string) (map[string]any, error) {
 	fields := "summary,status,assignee,priority,created,updated,subtasks,issuelinks"
 	// Add custom field IDs
 	for _, id := range customFields {
@@ -161,8 +341,8 @@ func (c *JiraClient) loadCustomFields(fieldNames map[string]string) error {
 	return nil
 }
 
-// SearchIssues searches for issues using JQL with pagination
-func (c *JiraClient) SearchIssues(jql string, maxResults int) ([]map[string]any, error) {
+// searchIssues searches for issues using JQL with pagination
+func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any, error) {
 	var b strings.Builder
 	b.WriteString("summary,status,assignee,priority,created,updated")
 
@@ -336,23 +516,87 @@ func (c *JiraClient) TestConnection() bool {
 	return true
 }
 
-// GetJiraClient creates a Jira client from environment variables
-func GetJiraClient(server string, email string, apiToken string) (*JiraClient, error) {
-	if server == "" || apiToken == "" || email == "" {
-		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
+// doRequest makes an authenticated request to the Jira API
+func (c *JiraClient) doRequest(method, endpoint string, params map[string]string) ([]byte, error) {
+	baseURL := fmt.Sprintf("%s/rest/api/%s/%s", c.Server, c.APIVersion, strings.TrimLeft(endpoint, "/"))
+
+	// Add query params
+	if len(params) > 0 {
+		values := url.Values{}
+		for k, v := range params {
+			values.Set(k, v)
+		}
+		baseURL += "?" + values.Encode()
 	}
 
-	client, err := NewJiraClient(server, apiToken, email)
+	logDebug("Request: %s %s", method, baseURL)
+
+	req, err := http.NewRequest(method, baseURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	if !client.TestConnection() {
-		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	if c.IsCloud {
+		// Basic auth with email:token
+		auth := base64.StdEncoding.EncodeToString([]byte(c.Email + ":" + c.APIToken))
+		req.Header.Set("Authorization", "Basic "+auth)
+	} else {
+		// Bearer token (PAT)
+		req.Header.Set("Authorization", "Bearer "+c.APIToken)
 	}
 
-	logDebug("Connected to Jira server: %s", server)
-	return client, nil
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	logDebug("Response: %d", resp.StatusCode)
+
+	if resp.StatusCode >= 400 {
+		logError("API error: %d - %s", resp.StatusCode, truncate(string(body), 500))
+		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
+	}
+
+	return body, nil
+}
+
+// getJson makes a GET request and returns JSON data
+func (c *JiraClient) getJson(endpoint string, params map[string]string) (map[string]any, error) {
+	body, err := c.doRequest("GET", endpoint, params)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// getJsonList makes a GET request and returns a JSON array
+func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]map[string]any, error) {
+	body, err := c.doRequest("GET", endpoint, params)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // Helper functions for parsing JSON responses

@@ -29,7 +29,8 @@ build:
 	done
 
 test:
-	CGO_ENABLED=0 go test -v ./...
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOCACHE=$(BUILD_DIR)/.cache go test -v ./...
 
 # build and install the binary
 install:

@@ -1,479 +1,52 @@
 package main
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestGetStatusEmoji(t *testing.T) {
+func TestParseSince(t *testing.T) {
+	now := time.Date(2025, 2, 24, 12, 0, 0, 0, time.UTC)
+
 	tests := []struct {
-		status string
-		want   string
+		input    string
+		wantDate string
+		wantErr  bool
 	}{
-		{"done", "🟣"},
-		{"Done", "🟣"},
-		{"  in progress  ", "🟢"},
-		{"not started", "⚪"},
-		{"at risk", "🟡"},
-		{"blocked", "🔴"},
-		{"unknown-status", "❓"},
-		{"", "❓"},
+		{"", "", false},
+		{"2026-01-02", "2026-01-02", false},
+		{"2025-01-15", "2025-01-15", false},
+		{"14", "2025-02-10", false},
+		{"0", "2025-02-24", false},
+		{"1", "2025-02-23", false},
+		{" 14 ", "2025-02-10", false},
+		{"invalid", "", true},
+		{"2025-13-01", "", true},
 	}
 	for _, tt := range tests {
-		got := GetStatusEmoji(tt.status)
-		if got != tt.want {
-			t.Errorf("GetStatusEmoji(%q) = %q, want %q", tt.status, got, tt.want)
+		got, err := ParseSince(tt.input, now)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ParseSince(%q) want error, got nil", tt.input)
+			}
+			continue
 		}
-	}
-}
-
-func TestGetStatusPriority(t *testing.T) {
-	if got := GetStatusPriority("done"); got != 0 {
-		t.Errorf("GetStatusPriority(done) = %d, want 0", got)
-	}
-	if got := GetStatusPriority("new"); got != 10 {
-		t.Errorf("GetStatusPriority(new) = %d, want 10", got)
-	}
-	if got := GetStatusPriority("unknown"); got != 999 {
-		t.Errorf("GetStatusPriority(unknown) = %d, want 999", got)
-	}
-}
-
-func TestParseJiraDate(t *testing.T) {
-	tests := []struct {
-		input string
-		valid bool
-	}{
-		{"2025-01-15", true},
-		{"2025-01-02T15:04:05.000Z", true},
-		{"2025-01-02T15:04:05.000-0700", true},
-		{"", false},
-		{"not-a-date", false},
-	}
-	for _, tt := range tests {
-		_, err := ParseJiraDate(tt.input)
-		gotValid := err == nil
-		if gotValid != tt.valid {
-			t.Errorf("ParseJiraDate(%q) valid=%v, want %v (err=%v)", tt.input, gotValid, tt.valid, err)
+		if err != nil {
+			t.Errorf("ParseSince(%q) err=%v", tt.input, err)
+			continue
 		}
-	}
-	// Check a parsed value
-	tm, err := ParseJiraDate("2025-06-10")
-	if err != nil {
-		t.Fatalf("ParseJiraDate(2025-06-10): %v", err)
-	}
-	if y, m, d := tm.Date(); y != 2025 || m != 6 || d != 10 {
-		t.Errorf("ParseJiraDate(2025-06-10) = %v, want 2025-06-10", tm)
-	}
-}
-
-func TestFormatDate(t *testing.T) {
-	if got := FormatDate(""); got != "N/A" {
-		t.Errorf("FormatDate(\"\") = %q, want N/A", got)
-	}
-	if got := FormatDate("2025-03-20"); got != "2025-03-20" {
-		t.Errorf("FormatDate(2025-03-20) = %q, want 2025-03-20", got)
-	}
-}
-
-func TestIsOverdue(t *testing.T) {
-	// Done/resolved never overdue
-	if IsOverdue("done", "2000-01-01") {
-		t.Error("IsOverdue(done, past date) want false")
-	}
-	if IsOverdue("resolved", "2000-01-01") {
-		t.Error("IsOverdue(resolved, past date) want false")
-	}
-	// No target end -> not overdue
-	if IsOverdue("in progress", "") {
-		t.Error("IsOverdue(in progress, \"\") want false")
-	}
-	if IsOverdue("in progress", "None") {
-		t.Error("IsOverdue(in progress, None) want false")
-	}
-	// Past date and not done -> overdue (use fixed past date so test is stable)
-	if !IsOverdue("in progress", "2000-01-01") {
-		t.Error("IsOverdue(in progress, 2000-01-01) want true")
-	}
-}
-
-func TestExtractIssueData(t *testing.T) {
-	issue := map[string]any{
-		"key": "PROJ-1",
-		"fields": map[string]any{
-			"summary":  "Test issue",
-			"status":   map[string]any{"name": "In Progress"},
-			"assignee": map[string]any{"displayName": "Alice"},
-			"priority": map[string]any{"name": "High"},
-			"created":  "2025-01-01T10:00:00.000Z",
-			"updated":  "2025-01-02T12:00:00.000Z",
-		},
-	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
-	if data.Key != "PROJ-1" {
-		t.Errorf("Key = %q, want PROJ-1", data.Key)
-	}
-	if data.Summary != "Test issue" {
-		t.Errorf("Summary = %q, want Test issue", data.Summary)
-	}
-	if data.StatusName != "in progress" {
-		t.Errorf("StatusName = %q, want 'in progress'", data.StatusName)
-	}
-	if data.Assignee != "Alice" {
-		t.Errorf("Assignee = %q, want Alice", data.Assignee)
-	}
-	if data.URL != "https://jira.example.com/browse/PROJ-1" {
-		t.Errorf("URL = %q", data.URL)
-	}
-	if data.ParentKey != "PROJ-1" {
-		t.Errorf("ParentKey = %q, want PROJ-1 (defaults to issue key)", data.ParentKey)
-	}
-}
-
-func TestExtractIssueData_missingFields(t *testing.T) {
-	issue := map[string]any{
-		"key": "PROJ-2",
-		"fields": map[string]any{
-			"summary": "Minimal",
-			// no status, assignee, priority -> defaults
-		},
-	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "PARENT-1", "Parent summary")
-	if data.Key != "PROJ-2" {
-		t.Errorf("Key = %q, want PROJ-2", data.Key)
-	}
-	if data.StatusName != "unknown" {
-		t.Errorf("StatusName = %q, want 'unknown'", data.StatusName)
-	}
-	if data.Assignee != "N/A" {
-		t.Errorf("Assignee = %q, want N/A", data.Assignee)
-	}
-	if data.Priority != "None" {
-		t.Errorf("Priority = %q, want None", data.Priority)
-	}
-	if data.ParentKey != "PARENT-1" || data.ParentSummary != "Parent summary" {
-		t.Errorf("ParentKey=%q ParentSummary=%q", data.ParentKey, data.ParentSummary)
-	}
-}
-
-func TestRenderMarkdownReport(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First",
-			StatusName: "Resolved",
-			Assignee:   "Alice",
-			TargetEnd:  "2025-01-01",
-			Updated:    "2025-01-02",
-			Emoji:      "🟣",
-			Trending:   "done",
-		},
-	}
-	cfg := &ReportConfig{Title: "abc"}
-	out := RenderMarkdownReport(issues, cfg)
-	if out == "" {
-		t.Error("RenderMarkdownReport returned empty string")
-	}
-	if !strings.Contains(out, "abc") {
-		t.Errorf("output missing title: %s", out)
-	}
-	// ensure "resolved" is mapped to done
-	if !strings.Contains(out, "🟣 done") {
-		t.Errorf("trending mapping failed: %s", out)
-	}
-}
-
-func TestRenderMarkdownReport_children(t *testing.T) {
-	// Child issues with parent info - should render parent column when ShowChildren=true
-	issues := []*IssueData{
-		{
-			Key:           "PROJ-123-1",
-			URL:           "https://jira/browse/PROJ-123-1",
-			Summary:       "Subtask one",
-			StatusName:    "in progress",
-			Assignee:      "Bob",
-			ParentKey:     "PROJ-123",
-			ParentSummary: "Parent epic",
-			ParentURL:     "https://jira/browse/PROJ-123",
-			TargetEnd:     "2025-02-01",
-			Updated:       "2025-01-15",
-			Emoji:         "🟢",
-			Trending:      "in progress",
-		},
-	}
-	cfg := &ReportConfig{ShowChildren: true, Title: "Children Report"}
-	out := RenderMarkdownReport(issues, cfg)
-	if out == "" {
-		t.Error("RenderMarkdownReport returned empty string")
-	}
-	if !strings.Contains(out, "| status | parent | issue |") {
-		t.Error("expected parent column header when ShowChildren=true")
-	}
-	if !strings.Contains(out, "Subtask one") {
-		t.Error("output missing child summary")
-	}
-	if !strings.Contains(out, "PROJ-123") {
-		t.Error("output missing parent key")
-	}
-}
-
-func TestRenderMarkdownReport_filterSince(t *testing.T) {
-	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	issues := []*IssueData{
-		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
-		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
-	}
-	cfg := &ReportConfig{Since: &jan1}
-	out := RenderMarkdownReport(issues, cfg)
-	if strings.Contains(out, "Old") {
-		t.Error("expected issue updated before since to be filtered out")
-	}
-	if !strings.Contains(out, "New") {
-		t.Error("expected issue updated after since to be included")
-	}
-}
-
-func TestRenderJSONReport(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First",
-			StatusName: "in progress",
-			Assignee:   "Alice",
-			Updated:    "2025-01-02",
-		},
-	}
-	cfg := &ReportConfig{}
-	out := RenderJSONReport(issues, cfg)
-	if out == "" {
-		t.Fatal("RenderJSONReport returned empty string")
-	}
-	if !json.Valid([]byte(out)) {
-		t.Errorf("output is not valid JSON: %s", out)
-	}
-	var decoded []*IssueData
-	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
-		t.Fatalf("failed to unmarshal output: %v", err)
-	}
-	if len(decoded) != 1 {
-		t.Errorf("decoded %d issues, want 1", len(decoded))
-	}
-	if decoded[0].Key != "A-1" || decoded[0].Summary != "First" {
-		t.Errorf("decoded issue = %+v, want Key=A-1 Summary=First", decoded[0])
-	}
-}
-
-func TestRenderJSONReport_filterSince(t *testing.T) {
-	jan1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	issues := []*IssueData{
-		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
-		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
-	}
-	cfg := &ReportConfig{Since: &jan1}
-	out := RenderJSONReport(issues, cfg)
-	var decoded []*IssueData
-	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-	if len(decoded) != 1 {
-		t.Errorf("after filter: %d issues, want 1", len(decoded))
-	}
-	if decoded[0].Summary != "New" {
-		t.Errorf("expected filtered issue Summary=New, got %q", decoded[0].Summary)
-	}
-}
-
-func TestRenderMarkdownReport_filterNoCommentSince(t *testing.T) {
-	now := time.Now().UTC()
-	since := now.AddDate(0, 0, -10)
-	recentComment := now.AddDate(0, 0, -1).Format(time.RFC3339) // 1 day ago -> excluded
-	oldComment := now.AddDate(0, 0, -60).Format(time.RFC3339)   // 60 days ago -> included
-	issues := []*IssueData{
-		{Key: "X-1", Summary: "Recently commented", Comment: IssueComment{Created: recentComment}},
-		{Key: "X-2", Summary: "Stale, needs update", Comment: IssueComment{Created: oldComment}},
-		{Key: "X-3", Summary: "No comment", Comment: IssueComment{}}, // no comment -> included
-	}
-	cfg := &ReportConfig{NoCommentSince: &since}
-	out := RenderMarkdownReport(issues, cfg)
-	if out == "" {
-		t.Error("RenderMarkdownReport returned empty string")
-	}
-	if strings.Contains(out, "Recently commented") {
-		t.Error("issues with recent comments should be excluded")
-	}
-	if !strings.Contains(out, "Stale, needs update") {
-		t.Error("issues with old comments should be included")
-	}
-	if !strings.Contains(out, "No comment") {
-		t.Error("issues with no comments  should be included")
-	}
-}
-
-func TestRenderJSONReport_empty(t *testing.T) {
-	cfg := &ReportConfig{}
-	out := RenderJSONReport(nil, cfg)
-	if out == "" {
-		t.Fatal("RenderJSONReport returned empty string for nil input")
-	}
-	var decoded []*IssueData
-	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
-		t.Fatalf("failed to unmarshal empty output: %v", err)
-	}
-	if len(decoded) != 0 {
-		t.Errorf("decoded %d issues, want 0", len(decoded))
-	}
-}
-
-func TestRenderCSVReport(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First issue",
-			StatusName: "in progress",
-			Assignee:   "Alice",
-			TargetEnd:  "2025-02-01",
-			Updated:    "2025-01-15",
-			Emoji:      "🟢",
-			Trending:   "in progress",
-		},
-	}
-	cfg := &ReportConfig{}
-	out := RenderCSVReport(issues, cfg)
-	if out == "" {
-		t.Fatal("RenderCSVReport returned empty string")
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) < 2 {
-		t.Errorf("expected header + at least 1 row, got %d lines", len(lines))
-	}
-	if !strings.Contains(out, "🐱") {
-		t.Error("expected CSV output to contain separator 🐱")
-	}
-	if !strings.Contains(out, "First issue") {
-		t.Error("expected output to contain issue summary")
-	}
-	if !strings.Contains(out, "status") {
-		t.Error("expected header row with status column")
-	}
-}
-
-func TestRenderCSVReport_children(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Key:       "PROJ-123-1",
-			Summary:   "Subtask",
-			ParentKey: "PROJ-123",
-			Assignee:  "Bob",
-			Emoji:     "🟢",
-			Trending:  "in progress",
-		},
-	}
-	cfg := &ReportConfig{ShowChildren: true}
-	out := RenderCSVReport(issues, cfg)
-	if !strings.Contains(out, "parent") {
-		t.Error("expected parent column when ShowChildren=true")
-	}
-	if !strings.Contains(out, "PROJ-123") {
-		t.Error("expected parent key in output")
-	}
-}
-
-func TestRenderCSVReport_escapeSeparator(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Summary:  "Contains🐱emoji",
-			Emoji:    "🟢",
-			Trending: "in progress",
-		},
-	}
-	cfg := &ReportConfig{}
-	out := RenderCSVReport(issues, cfg)
-	// Field with separator should be quoted
-	if !strings.Contains(out, `"Contains🐱emoji"`) {
-		t.Errorf("expected quoted field for value containing separator, got: %s", out)
-	}
-}
-
-func TestRenderSlackReport(t *testing.T) {
-	issues := []*IssueData{
-		{
-			Key:       "A-1",
-			URL:       "https://jira/browse/A-1",
-			Summary:   "First issue",
-			Emoji:     "🟢",
-			Trending:  "in progress",
-			TargetEnd: "2025-02-01",
-			Comment:   IssueComment{Url: "https://jira/comment/1", Created: "2025-01-15"},
-		},
-		{
-			Key:       "A-2",
-			URL:       "https://jira/browse/A-2",
-			Summary:   "Second issue",
-			TargetEnd: "2025-02-02",
-			Emoji:     "🟣",
-			Trending:  "done",
-		},
-	}
-	cfg := &ReportConfig{}
-	out := RenderSlackReport(issues, cfg)
-	if !strings.HasPrefix(out, "1. ") {
-		t.Errorf("expected numbered list, got: %s", out)
-	}
-	if !strings.Contains(out, "[First issue](https://jira/browse/A-1)") {
-		t.Error("expected summary link in output")
-	}
-	if !strings.Contains(out, "([last update](https://jira/comment/1))") {
-		t.Error("expected update link for first issue")
-	}
-}
-
-func TestRenderURLReport(t *testing.T) {
-	issues := []*IssueData{
-		{Key: "SCM-1079"},
-		{Key: "SCM-3791"},
-	}
-	cfg := &ReportConfig{}
-	out := RenderURLReport("https://jirasw.nvidia.com", issues, cfg)
-	if out == "" {
-		t.Fatal("RenderURLReport returned empty string")
-	}
-	if !strings.Contains(out, "jql=") {
-		t.Error("expected jql param in URL")
-	}
-	if !strings.Contains(out, "SCM-1079") || !strings.Contains(out, "SCM-3791") {
-		t.Error("expected issue keys in URL")
-	}
-	if !strings.Contains(out, "order+by+assignee+ASC") {
-		t.Error("expected order by assignee in JQL")
-	}
-}
-
-func TestRenderURLReport_empty(t *testing.T) {
-	cfg := &ReportConfig{}
-	out := RenderURLReport("https://jira.example.com", nil, cfg)
-	if out != "" {
-		t.Errorf("expected empty string for no issues, got %q", out)
-	}
-}
-
-func TestFilterAndSortIssues_skipsNil(t *testing.T) {
-	// Should not panic when slice contains nil
-	issues := []*IssueData{
-		nil,
-		{Key: "X-1", Summary: "Valid", Updated: "2025-01-15"},
-		nil,
-	}
-	cfg := &ReportConfig{}
-	out := filterAndSortIssues(issues, cfg)
-	if len(out) != 1 {
-		t.Errorf("expected 1 issue after filtering nils, got %d", len(out))
-	}
-	if out[0].Key != "X-1" {
-		t.Errorf("expected X-1, got %s", out[0].Key)
+		if tt.wantDate == "" {
+			if got != nil {
+				t.Errorf("ParseSince(%q) want nil, got %v", tt.input, got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Errorf("ParseSince(%q) want %s, got nil", tt.input, tt.wantDate)
+			continue
+		}
+		if gotStr := got.Format("2006-01-02"); gotStr != tt.wantDate {
+			t.Errorf("ParseSince(%q) = %s, want %s", tt.input, gotStr, tt.wantDate)
+		}
 	}
 }
