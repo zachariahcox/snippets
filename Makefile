@@ -2,7 +2,7 @@ BINARY_NAME := snippets
 DATE_FMT=+%Y-%m-%d
 VERSION := $(shell git rev-parse --short HEAD)
 BUILD_DATE := $(shell date "$(DATE_FMT)")
-BUILD_FLAGS := "-w -s -X 'main.Version=$(VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'"
+LD_FLAGS := "-w -s -X 'main.Version=$(VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'"
 BUILD_DIR := $(CURDIR)/build
 INSTALL_DIR := ~/bin
 GO_FILES := $(shell find . -name '*.go' -not -path "./vendor/*")
@@ -21,9 +21,9 @@ build:
 		bin_suffix=$$(if [ "$$os" = "windows" ]; then echo ".exe"; else echo ""; fi); \
 		echo "Building for $$os/$$arch..."; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
-		go build \
+		go build -trimpath \
 		-tags=netgo \
-		-ldflags=$(BUILD_FLAGS) \
+		-ldflags=$(LD_FLAGS) \
 		-o $(BUILD_DIR)/$$os_arch/$(BINARY_NAME)$$bin_suffix \
 		$(GO_FILES);\
 	done
