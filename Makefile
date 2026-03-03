@@ -33,7 +33,7 @@ test:
 	CGO_ENABLED=0 GOCACHE=$(BUILD_DIR)/.cache go test -v ./...
 
 # build and install the binary
-install:
+install: build
 	mkdir -p $(INSTALL_DIR)
 	@os_arch=$$(go env GOOS)/$$(go env GOARCH); \
 		bin_suffix=$$(if [ "$$(go env GOOS)" = "windows" ]; then echo ".exe"; else echo ""; fi); \
