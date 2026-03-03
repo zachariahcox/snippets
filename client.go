@@ -81,7 +81,7 @@ type IssueData struct {
 
 // NewJiraClient creates a new Jira client
 func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
-	if server == "" || apiToken == "" || email == "" {
+	if server == "" || apiToken == "" {
 		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
 	}
 	server = strings.TrimRight(server, "/")

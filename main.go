@@ -290,8 +290,7 @@ Examples:
 	}
 	email := os.Getenv("JIRA_EMAIL")
 	if email == "" {
-		logError("JIRA_EMAIL environment variable is not set.\nExample: export JIRA_EMAIL=you@company.com")
-		os.Exit(1)
+		logDebug("JIRA_EMAIL environment variable is not set.\nExample: export JIRA_EMAIL=you@company.com")
 	}
 
 	// Merge short flags
