@@ -26,13 +26,35 @@ make build install
 
 ## Usage
 
-Set required environment variables:
+### Credentials
+
+Set required environment variables, or use an optional credentials file.
+
+**Environment variables:**
 
 ```bash
 export JIRA_SERVER="https://mycompany.atlassian.net"
 export JIRA_API_TOKEN="your-token"
 export JIRA_EMAIL="you@company.com"   # required for Jira Cloud
 ```
+
+**Optional credentials file:** `~/.snippets/creds.sh`
+
+If the file exists, it is sourced in a subprocess and can export the same variables. Environment variables take precedence over the file. Useful for keeping tokens out of your shell profile or for different Jira instances.
+
+```bash
+mkdir -p ~/.snippets
+cat > ~/.snippets/creds.sh << 'EOF'
+export JIRA_SERVER="https://mycompany.atlassian.net"
+export JIRA_API_TOKEN="your-token"
+export JIRA_EMAIL="you@company.com"
+EOF
+chmod 600 ~/.snippets/creds.sh
+```
+
+Required: `JIRA_SERVER`, `JIRA_API_TOKEN`. Optional: `JIRA_EMAIL` (needed for Jira Cloud).
+
+### Running reports
 
 Run with issue keys or a JQL query:
 

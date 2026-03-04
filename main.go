@@ -38,6 +38,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +48,77 @@ import (
 
 // Default configuration values
 const defaultPageSize = 50
+
+// credsFileName is the name of the optional shell script that can export JIRA_* vars.
+const credsFileName = ".snippets/creds.sh"
+
+// loadJiraCreds returns JIRA_SERVER, JIRA_API_TOKEN, and JIRA_EMAIL from the environment
+// and optionally from a creds shell script (sourced in a subprocess). Env vars take precedence.
+// credsFilePath: if non-empty, use this path; otherwise use ~/.snippets/creds.sh. Pass "" in production.
+// Returns an error if JIRA_SERVER or JIRA_API_TOKEN are missing.
+func loadJiraCreds(credsFilePath string) (server, apiToken, email string, err error) {
+	server = os.Getenv("JIRA_SERVER")
+	apiToken = os.Getenv("JIRA_API_TOKEN")
+	email = os.Getenv("JIRA_EMAIL")
+
+	// Resolve creds file path
+	var credsPath string
+	if credsFilePath != "" {
+		credsPath = credsFilePath
+	} else {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			credsPath = ""
+		} else {
+			credsPath = filepath.Join(home, credsFileName)
+		}
+	}
+	if credsPath != "" {
+		if _, statErr := os.Stat(credsPath); statErr == nil {
+			script := fmt.Sprintf(`. %q 2>/dev/null; echo "JIRA_SERVER=$JIRA_SERVER"; echo "JIRA_API_TOKEN=$JIRA_API_TOKEN"; echo "JIRA_EMAIL=$JIRA_EMAIL"`, credsPath)
+			cmd := exec.Command("sh", "-c", script)
+			cmd.Env = os.Environ()
+			out, cmdErr := cmd.Output()
+			if cmdErr == nil {
+				for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					i := strings.Index(line, "=")
+					if i <= 0 {
+						continue
+					}
+					key, val := line[:i], line[i+1:]
+					val = strings.Trim(val, "\"")
+					switch key {
+					case "JIRA_SERVER":
+						if server == "" && val != "" {
+							server = val
+						}
+					case "JIRA_API_TOKEN":
+						if apiToken == "" && val != "" {
+							apiToken = val
+						}
+					case "JIRA_EMAIL":
+						if email == "" && val != "" {
+							email = val
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Validate required fields
+	if server == "" {
+		return "", "", "", fmt.Errorf("JIRA_SERVER is not set (set env var or export from ~/.snippets/creds.sh)")
+	}
+	if apiToken == "" {
+		return "", "", "", fmt.Errorf("JIRA_API_TOKEN is not set (set env var or export from ~/.snippets/creds.sh)")
+	}
+	return server, apiToken, email, nil
+}
 
 // Version and BuildDate are set via ldflags when building with make
 var (
@@ -276,20 +349,14 @@ Examples:
 		os.Exit(0)
 	}
 
-	// parse credentials
-	server := os.Getenv("JIRA_SERVER")
-	if server == "" {
-		logError("JIRA_SERVER environment variable is not set.\nExample: export JIRA_SERVER=https://mycompany.atlassian.net")
+	// Load credentials from env and optionally ~/.snippets/creds.sh
+	server, apiToken, email, err := loadJiraCreds("")
+	if err != nil {
+		logError("%v", err)
 		os.Exit(1)
 	}
-	apiToken := os.Getenv("JIRA_API_TOKEN")
-	if apiToken == "" {
-		logError("JIRA_API_TOKEN environment variable is not set.\nExample: export JIRA_API_TOKEN=your-token")
-		os.Exit(1)
-	}
-	email := os.Getenv("JIRA_EMAIL")
 	if email == "" {
-		logDebug("JIRA_EMAIL environment variable is not set.\nExample: export JIRA_EMAIL=you@company.com")
+		logDebug("JIRA_EMAIL is not set. Set the env var or export it from ~/.snippets/creds.sh for Cloud.")
 	}
 
 	// Merge short flags
