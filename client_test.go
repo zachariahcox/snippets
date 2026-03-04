@@ -23,8 +23,11 @@ func TestExtractIssueData(t *testing.T) {
 	if data.Summary != "Test issue" {
 		t.Errorf("Summary = %q, want Test issue", data.Summary)
 	}
-	if data.StatusName != "in progress" {
-		t.Errorf("StatusName = %q, want 'in progress'", data.StatusName)
+	if data.Status != "in progress" {
+		t.Errorf("Status = %q, want 'in progress'", data.Status)
+	}
+	if data.Trending != "in progress" {
+		t.Errorf("Trending = %q, want 'in progress'", data.Trending)
 	}
 	if data.Assignee != "Alice" {
 		t.Errorf("Assignee = %q, want Alice", data.Assignee)
@@ -48,8 +51,11 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 	if data.Key != "PROJ-2" {
 		t.Errorf("Key = %q, want PROJ-2", data.Key)
 	}
-	if data.StatusName != "unknown" {
-		t.Errorf("StatusName = %q, want 'unknown'", data.StatusName)
+	if data.Status != "unknown" {
+		t.Errorf("Status = %q, want 'unknown'", data.Status)
+	}
+	if data.Trending != "unknown" {
+		t.Errorf("Trending = %q, want 'unknown'", data.Trending)
 	}
 	if data.Assignee != "N/A" {
 		t.Errorf("Assignee = %q, want N/A", data.Assignee)
@@ -143,10 +149,10 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
-			"summary":   "Overdue task",
-			"status":   map[string]any{"name": "In Progress"},
-			"created":  "2025-01-01T00:00:00Z",
-			"updated":  "2025-01-02T00:00:00Z",
+			"summary": "Overdue task",
+			"status":  map[string]any{"name": "in progress"},
+			"created": "2025-01-01T00:00:00Z",
+			"updated": "2025-01-02T00:00:00Z",
 		},
 	}
 	// Target end comes from custom field; customFields["Target end"] may be unset.
@@ -160,8 +166,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	doneIssue := map[string]any{
 		"key": "P-2",
 		"fields": map[string]any{
-			"summary":  "Done task",
-			"status":  map[string]any{"name": "Done"},
+			"summary": "Done task",
+			"status":  map[string]any{"name": "done"},
 			"created": "2025-01-01T00:00:00Z",
 			"updated": "2025-01-02T00:00:00Z",
 		},
@@ -181,8 +187,11 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 		},
 	}
 	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
-	if data.StatusName != "in progress" {
-		t.Errorf("StatusName = %q, want normalized lowercase", data.StatusName)
+	if data.Status != "in progress" {
+		t.Errorf("Status = %q, want 'in progress'", data.Status)
+	}
+	if data.Trending != "in progress" {
+		t.Errorf("Trending = %q, want 'in progress'", data.Trending)
 	}
 }
 

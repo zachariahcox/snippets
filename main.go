@@ -118,8 +118,7 @@ func ParseJiraDate(dateStr string) (time.Time, error) {
 }
 
 // IsStale returns true if the issue is past its target date and not done
-func IsStale(statusName string, targetEnd string) bool {
-	status := strings.ToLower(strings.TrimSpace(statusName))
+func IsStale(status string, targetEnd string) bool {
 	if status == "done" || status == "closed" || status == "resolved" {
 		return false
 	}
@@ -206,10 +205,10 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 				if commentJson == nil {
 					continue
 				}
-				commentId := getString(commentJson, "id")
+				commentId := getString(commentJson, "id", "")
 				issue.Comment = IssueComment{
 					Url:     fmt.Sprintf("%s?focusedId=%s&page=com.atlassian.jira.plugin.system.issuetabpanels%%3Acomment-tabpanel#comment-%s", issue.URL, commentId, commentId),
-					Created: getString(commentJson, "updated"),
+					Created: getString(commentJson, "updated", ""),
 				}
 			}
 		}

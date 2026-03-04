@@ -65,7 +65,7 @@ type IssueData struct {
 	Key           string
 	URL           string
 	Summary       string
-	StatusName    string
+	Status        string
 	Assignee      string
 	Priority      string
 	Created       string
@@ -118,65 +118,51 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 // ExtractIssueData extracts relevant data from a Jira issue API response
 func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
 	fields := getMap(issue, "fields")
-	issueKey := getString(issue, "key")
+	issueKey := getString(issue, "key", "")
 
 	// Get status
 	statusObj := getMap(fields, "status")
-	statusName := getString(statusObj, "name")
-	if statusName == "" {
-		statusName = "Unknown"
-	}
-	statusName = strings.ToLower(strings.TrimSpace(statusName))
-
-	// Get assignee
-	assigneeObj := getMap(fields, "assignee")
-	assignee := getString(assigneeObj, "displayName")
-	if assignee == "" {
-		assignee = "N/A"
-	}
-
-	// Get priority
-	priorityObj := getMap(fields, "priority")
-	priority := getString(priorityObj, "name")
-	if priority == "" {
-		priority = "None"
-	}
-
-	// Get dates
-	created := getString(fields, "created")
-	updated := getString(fields, "updated")
-
-	// Get target end from custom field
-	targetEnd := ""
-	if customFields["Target end"] != "" {
-		targetEnd = getString(fields, customFields["Target end"])
-	}
-
-	// Get summary
-	summary := getString(fields, "summary")
-
-	// Build issue URL
-	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
-
-	// Get trending
+	statusRaw := getString(statusObj, "name", "Unknown")
+	statusNormalized := strings.ToLower(strings.TrimSpace(statusRaw))
 	trending := "on track"
-	switch statusName {
+	switch statusNormalized {
 	case "done", "closed", "resolved":
 		trending = "done"
 	case "not started", "ready for work", "vetting", "new":
 		trending = "not started"
 	default:
-		trending = statusName
+		trending = statusNormalized
 	}
 
-	// Get emoji
+	// Get assignee
+	assigneeObj := getMap(fields, "assignee")
+	assignee := getString(assigneeObj, "displayName", "N/A")
+
+	// Get priority
+	priorityObj := getMap(fields, "priority")
+	priority := getString(priorityObj, "name", "None")
+
+	// Get dates
+	created := getString(fields, "created", "")
+	updated := getString(fields, "updated", "")
+
+	// Get target end from custom field
+	targetEnd := getString(fields, customFields["Target end"], "")
+
+	// Get summary
+	summary := getString(fields, "summary", "")
+
+	// Build issue URL
+	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
+
+	// Get emoji from normalized status
 	emoji := "❓"
-	if value, ok := statusCategories[strings.ToLower(strings.TrimSpace(statusName))]; ok {
+	if value, ok := statusCategories[statusNormalized]; ok {
 		emoji = value
 	}
 
-	// override with due date info no matter what status
-	if IsStale(statusName, targetEnd) {
+	// Override with overdue when past target date
+	if IsStale(statusNormalized, targetEnd) {
 		emoji = "🔴"
 		trending = "overdue"
 	}
@@ -197,7 +183,7 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 		Key:           issueKey,
 		URL:           issueURL,
 		Summary:       summary,
-		StatusName:    statusName,
+		Status:        statusNormalized,
 		Assignee:      assignee,
 		Priority:      priority,
 		Created:       created,
@@ -256,12 +242,12 @@ func (client *JiraClient) GetSubtasks(parentKey, parentSummary string) []*IssueD
 
 	fields := getMap(parentIssue, "fields")
 	if parentSummary == "" {
-		parentSummary = getString(fields, "summary")
+		parentSummary = getString(fields, "summary", "")
 	}
 
 	subtaskRefs := getMapList(fields, "subtasks")
 	for _, ref := range subtaskRefs {
-		subtaskKey := getString(ref, "key")
+		subtaskKey := getString(ref, "key", "")
 		if subtaskKey != "" {
 			data, err := client.GetIssue(subtaskKey, parentKey, parentSummary)
 			if err == nil && data != nil {
@@ -286,7 +272,7 @@ func (client *JiraClient) GetLinkedIssues(parentKey, parentSummary string) []*Is
 
 	fields := getMap(parentIssue, "fields")
 	if parentSummary == "" {
-		parentSummary = getString(fields, "summary")
+		parentSummary = getString(fields, "summary", "")
 	}
 
 	issueLinks := getMapList(fields, "issuelinks")
@@ -296,7 +282,7 @@ func (client *JiraClient) GetLinkedIssues(parentKey, parentSummary string) []*Is
 			linkedIssue = getMap(link, "inwardIssue")
 		}
 		if linkedIssue != nil {
-			linkedKey := getString(linkedIssue, "key")
+			linkedKey := getString(linkedIssue, "key", "")
 			if linkedKey != "" {
 				data, err := client.GetIssue(linkedKey, parentKey, parentSummary)
 				if err == nil && data != nil {
@@ -331,8 +317,8 @@ func (c *JiraClient) loadCustomFields(fieldNames map[string]string) error {
 
 	for name := range fieldNames {
 		for _, f := range fields {
-			if getString(f, "name") == name {
-				fieldNames[name] = getString(f, "id")
+			if getString(f, "name", "") == name {
+				fieldNames[name] = getString(f, "id", "")
 				break
 			}
 		}
@@ -478,7 +464,7 @@ func (c *JiraClient) getMostRecentCommentsBulk(issueKeys []string) (map[string]m
 
 	issues := getMapList(response, "issues")
 	for _, issue := range issues {
-		key := getString(issue, "key")
+		key := getString(issue, "key", "")
 		fields := getMap(issue, "fields")
 		commentObj := getMap(fields, "comment")
 		comments := getMapList(commentObj, "comments")
@@ -495,9 +481,9 @@ func findLatestComment(comments []map[string]any) map[string]any {
 		return nil
 	}
 	latest := comments[0]
-	latestCreated := getString(latest, "created")
+	latestCreated := getString(latest, "created", "")
 	for i := 1; i < len(comments); i++ {
-		created := getString(comments[i], "created")
+		created := getString(comments[i], "created", "")
 		if created > latestCreated {
 			latest = comments[i]
 			latestCreated = created
@@ -601,16 +587,16 @@ func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]m
 
 // Helper functions for parsing JSON responses
 
-func getString(m map[string]any, key string) string {
+func getString(m map[string]any, key string, defaultValue string) string {
 	if m == nil {
-		return ""
+		return defaultValue
 	}
 	if v, ok := m[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
 		}
 	}
-	return ""
+	return defaultValue
 }
 
 func getInt(m map[string]any, key string) int {

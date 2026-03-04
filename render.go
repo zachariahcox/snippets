@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -59,16 +60,16 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
-	result = append(result, fmt.Sprintf("\n### %s", cfg.Title))
-	result = append(result, fmt.Sprintf("* generated at: %s", time.Now().Format(time.RFC3339)))
+	result = append(result, fmt.Sprintf("\n### %s @ %s", cfg.Title, time.Now().Format(time.RFC3339)))
+
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
 	// Render header row
 	if cfg.ShowChildren {
-		result = append(result, "\n| status | parent | issue | assignee | target date | last update |")
+		result = append(result, "\n| trending | parent | issue | assignee | target date | last update |")
 		result = append(result, "|---|:--|:--|:--|:--|:--|")
 	} else {
-		result = append(result, "\n| status | issue | assignee | target date | last update |")
+		result = append(result, "\n| trending | issue | assignee | target date | last update |")
 		result = append(result, "|---|:--|:--|:--|:--|")
 	}
 
@@ -76,7 +77,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	for _, issue := range issues {
 		// Format cells
 		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
-		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
+		trendingWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
 		targetEnd := FormatDate(issue.TargetEnd)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
 
@@ -85,10 +86,10 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 		if cfg.ShowChildren {
 			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
 			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
-				statusWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
+				trendingWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
 		} else {
 			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
-				statusWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
+				trendingWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
 		}
 		result = append(result, row)
 	}
@@ -248,11 +249,11 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	}
 	logInfo("Filtered %d issues", len(issues)-len(filteredIssues))
 
-	// Sort issues
+	// Sort issues by trending, target end, updated
 	sort.Slice(filteredIssues, func(i, j int) bool {
 		// By status priority
-		pi := GetStatusPriority(filteredIssues[i].StatusName)
-		pj := GetStatusPriority(filteredIssues[j].StatusName)
+		pi := GetStatusPriority(filteredIssues[i].Trending)
+		pj := GetStatusPriority(filteredIssues[j].Trending)
 		if pi != pj {
 			return pi < pj
 		}
@@ -283,20 +284,11 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	return filteredIssues
 }
 
-// statusPriority maps status name to sort priority (O(1) lookup)
-var statusPriority = func() map[string]int {
-	m := make(map[string]int, len(statusOrder))
-	for i, s := range statusOrder {
-		m[s] = i
-	}
-	return m
-}()
-
-// GetStatusPriority returns the sort priority for a status
+// GetStatusPriority returns the sort priority for a status (index in statusOrder, or 999 if unknown)
 func GetStatusPriority(statusName string) int {
-	status := strings.ToLower(strings.TrimSpace(statusName))
-	if p, ok := statusPriority[status]; ok {
-		return p
+	s := strings.ToLower(strings.TrimSpace(statusName))
+	if i := slices.Index(statusOrder, s); i >= 0 {
+		return i
 	}
 	return 999
 }

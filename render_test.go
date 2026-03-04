@@ -79,15 +79,15 @@ func TestIsStale(t *testing.T) {
 func TestRenderMarkdownReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First",
-			StatusName: "Resolved",
-			Assignee:   "Alice",
-			TargetEnd:  "2025-01-01",
-			Updated:    "2025-01-02",
-			Emoji:      "🟣",
-			Trending:   "done",
+			Key:       "A-1",
+			URL:       "https://jira/a",
+			Summary:   "First",
+			Status:    "resolved",
+			Assignee:  "Alice",
+			TargetEnd: "2025-01-01",
+			Updated:   "2025-01-02",
+			Emoji:     "🟣",
+			Trending:  "done",
 		},
 	}
 	cfg := &ReportConfig{Title: "abc"}
@@ -109,7 +109,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 			Key:           "PROJ-123-1",
 			URL:           "https://jira/browse/PROJ-123-1",
 			Summary:       "Subtask one",
-			StatusName:    "in progress",
+			Status:        "in progress",
 			Assignee:      "Bob",
 			ParentKey:     "PROJ-123",
 			ParentSummary: "Parent epic",
@@ -125,7 +125,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
 	}
-	if !strings.Contains(out, "| status | parent | issue |") {
+	if !strings.Contains(out, "| trending | parent | issue |") {
 		t.Error("expected parent column header when ShowChildren=true")
 	}
 	if !strings.Contains(out, "Subtask one") {
@@ -181,12 +181,12 @@ func TestRenderMarkdownReport_filterNoCommentSince(t *testing.T) {
 func TestRenderJSONReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First",
-			StatusName: "in progress",
-			Assignee:   "Alice",
-			Updated:    "2025-01-02",
+			Key:      "A-1",
+			URL:      "https://jira/a",
+			Summary:  "First",
+			Status:   "in progress",
+			Assignee: "Alice",
+			Updated:  "2025-01-02",
 		},
 	}
 	cfg := &ReportConfig{}
@@ -247,15 +247,15 @@ func TestRenderJSONReport_empty(t *testing.T) {
 func TestRenderCSVReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:        "A-1",
-			URL:        "https://jira/a",
-			Summary:    "First issue",
-			StatusName: "in progress",
-			Assignee:   "Alice",
-			TargetEnd:  "2025-02-01",
-			Updated:    "2025-01-15",
-			Emoji:      "🟢",
-			Trending:   "in progress",
+			Key:       "A-1",
+			URL:       "https://jira/a",
+			Summary:   "First issue",
+			Status:    "in progress",
+			Assignee:  "Alice",
+			TargetEnd: "2025-02-01",
+			Updated:   "2025-01-15",
+			Emoji:     "🟢",
+			Trending:  "in progress",
 		},
 	}
 	cfg := &ReportConfig{}
