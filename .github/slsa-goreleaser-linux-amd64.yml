@@ -10,4 +10,4 @@ goos: linux
 goarch: amd64
 binary: snippets-linux-amd64
 ldflags:
-  - -s -w -X main.Version=$(VERSION) -X main.BuildDate=$(BUILD_DATE)
+  - -s -w -X main.Version={{ .Env.GO_VERSION }} -X main.BuildDate={{ .Env.GO_BUILD_DATE }}
