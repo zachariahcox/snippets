@@ -43,4 +43,5 @@ jobs:
       go-version-file: go.mod
       config-file: ${{ matrix.config }}
       upload-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+      # Only for dynamic values used in config ldflags (VERSION, BUILD_DATE). CGO_ENABLED etc. are in the config env.
       evaluated-envs: "VERSION=${{ needs.prep.outputs.version }} BUILD_DATE=${{ needs.prep.outputs.build_date }}"

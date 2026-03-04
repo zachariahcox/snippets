@@ -1,5 +1,11 @@
 # SLSA Go builder config - darwin/amd64
 version: 1
+env:
+  - GO111MODULE=on
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+  - -tags=netgo
 goos: darwin
 goarch: amd64
 binary: snippets-darwin-amd64
