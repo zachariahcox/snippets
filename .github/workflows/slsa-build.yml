@@ -8,7 +8,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      build_date: ${{ steps.vars.outputs.build_date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: vars
+        run: |
+          echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prep
     strategy:
       matrix:
         include:
@@ -28,3 +43,4 @@ jobs:
       go-version-file: go.mod
       config-file: ${{ matrix.config }}
       upload-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+      evaluated-envs: "VERSION=${{ needs.prep.outputs.version }} BUILD_DATE=${{ needs.prep.outputs.build_date }}"
