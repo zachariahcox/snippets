@@ -130,8 +130,8 @@ var (
 type ReportConfig struct {
 	Title          string
 	ShowChildren   bool
-	Since          *time.Time
-	NoCommentSince *time.Time
+	UpdatedAfter   *time.Time
+	NoCommentAfter *time.Time
 	OutputFile     string
 	JSONOutput     bool
 	CSVOutput      bool
@@ -414,16 +414,16 @@ Examples:
 		}
 		since = t
 		if since != nil {
-			logInfo("Filtering issues updated after %s", since.Format("2006-01-02"))
+			logInfo("Filtering out issues updated after %s", since.Format("2006-01-02"))
 		}
 	}
 
 	// parse no comment since date
-	var noCommentSince *time.Time
+	var noCommentAfter *time.Time
 	if *needsUpdate > 0 {
 		t := time.Now().UTC().AddDate(0, 0, -*needsUpdate)
-		noCommentSince = &t
-		logInfo("Filtering issues with no comment since %s", noCommentSince)
+		noCommentAfter = &t
+		logInfo("Filtering out issues with any comments after %s", noCommentAfter)
 	}
 
 	// Remove existing output file
@@ -452,8 +452,8 @@ Examples:
 	cfg := &ReportConfig{
 		Title:          *title,
 		ShowChildren:   *children,
-		Since:          since,
-		NoCommentSince: noCommentSince,
+		UpdatedAfter:   since,
+		NoCommentAfter: noCommentAfter,
 		OutputFile:     *outputFile,
 		JSONOutput:     *jsonOutput,
 		CSVOutput:      *csvOutput,

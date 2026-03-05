@@ -125,7 +125,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
 	}
-	if !strings.Contains(out, "| trending | parent | issue |") {
+	if !strings.Contains(out, "| parent |") {
 		t.Error("expected parent column header when ShowChildren=true")
 	}
 	if !strings.Contains(out, "Subtask one") {
@@ -142,7 +142,7 @@ func TestRenderMarkdownReport_filterSince(t *testing.T) {
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
-	cfg := &ReportConfig{Since: &jan1}
+	cfg := &ReportConfig{UpdatedAfter: &jan1}
 	out := RenderMarkdownReport(issues, cfg)
 	if strings.Contains(out, "Old") {
 		t.Error("expected issue updated before since to be filtered out")
@@ -152,7 +152,7 @@ func TestRenderMarkdownReport_filterSince(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownReport_filterNoCommentSince(t *testing.T) {
+func TestRenderMarkdownReport_filterNoCommentAfter(t *testing.T) {
 	now := time.Now().UTC()
 	since := now.AddDate(0, 0, -10)
 	recentComment := now.AddDate(0, 0, -1).Format(time.RFC3339)
@@ -162,7 +162,7 @@ func TestRenderMarkdownReport_filterNoCommentSince(t *testing.T) {
 		{Key: "X-2", Summary: "Stale, needs update", Comment: IssueComment{Created: oldComment}},
 		{Key: "X-3", Summary: "No comment", Comment: IssueComment{}},
 	}
-	cfg := &ReportConfig{NoCommentSince: &since}
+	cfg := &ReportConfig{NoCommentAfter: &since}
 	out := RenderMarkdownReport(issues, cfg)
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
@@ -215,7 +215,7 @@ func TestRenderJSONReport_filterSince(t *testing.T) {
 		{Key: "X-1", Updated: "2024-12-01T00:00:00Z", Summary: "Old"},
 		{Key: "X-2", Updated: "2025-02-01T00:00:00Z", Summary: "New"},
 	}
-	cfg := &ReportConfig{Since: &jan1}
+	cfg := &ReportConfig{UpdatedAfter: &jan1}
 	out := RenderJSONReport(issues, cfg)
 	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {

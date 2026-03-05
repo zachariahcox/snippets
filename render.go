@@ -66,11 +66,11 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	// Render header row
 	if cfg.ShowChildren {
-		result = append(result, "\n| trending | parent | issue | assignee | target date | last update |")
-		result = append(result, "|---|:--|:--|:--|:--|:--|")
+		result = append(result, "\n| trending | status | parent | issue | assignee | target date | last update |")
+		result = append(result, "|---|---|:--|:--|:--|:--|:--|")
 	} else {
-		result = append(result, "\n| trending | issue | assignee | target date | last update |")
-		result = append(result, "|---|:--|:--|:--|:--|")
+		result = append(result, "\n| trending | status | issue | assignee | target date | last update |")
+		result = append(result, "|---|---|:--|:--|:--|:--|")
 	}
 
 	// Render rows
@@ -85,11 +85,11 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 		var row string
 		if cfg.ShowChildren {
 			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
-				trendingWithEmoji, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
+				trendingWithEmoji, issue.Status, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
 		} else {
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s |",
-				trendingWithEmoji, issueLink, issue.Assignee, targetEnd, timestampLink)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
+				trendingWithEmoji, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
 		}
 		result = append(result, row)
 	}
@@ -222,25 +222,25 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 			continue
 		}
 		// Exclude issues updated before the since date
-		if cfg.Since != nil {
-			timestamp := issue.Updated
-			if timestamp == "" || timestamp == "N/A" {
-				continue
-			}
-			updateDate, err := ParseJiraDate(timestamp)
+		if cfg.UpdatedAfter != nil && issue.Updated != "" && issue.Updated != "N/A" {
+			updateDate, err := ParseJiraDate(issue.Updated)
 			if err != nil {
-				logWarning("Could not parse date '%s': %v", timestamp, err)
+				logWarning("Could not parse date '%s': %v", issue.Updated, err)
 				continue
 			}
-			if updateDate.Before(*cfg.Since) {
+			if updateDate.Before(*cfg.UpdatedAfter) {
 				continue
 			}
 		}
 
 		// Exclude issues with a comment since the "no comment since" date
-		if cfg.NoCommentSince != nil && issue.Comment.Created != "" {
+		if cfg.NoCommentAfter != nil && issue.Comment.Created != "" && issue.Comment.Created != "N/A" {
 			commentDate, err := ParseJiraDate(issue.Comment.Created)
-			if err == nil && commentDate.After(*cfg.NoCommentSince) {
+			if err != nil {
+				logWarning("Could not parse date '%s': %v", issue.Comment.Created, err)
+				continue
+			}
+			if commentDate.After(*cfg.NoCommentAfter) {
 				continue
 			}
 		}
