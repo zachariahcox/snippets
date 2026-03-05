@@ -219,6 +219,32 @@ func IsStale(status string, targetEnd string) bool {
 	return now.After(targetTime.UTC())
 }
 
+// IsDueWithinNextMonth returns true if the issue has a target end date within the next calendar month and is not done.
+func IsDueWithinNextMonth(targetEnd string) bool {
+	if targetEnd == "" || targetEnd == "None" {
+		return false
+	}
+	now := time.Now().UTC()
+	var dueDate time.Time
+	if !strings.Contains(targetEnd, "T") {
+		d, err := time.Parse("2006-01-02", targetEnd)
+		if err != nil {
+			return false
+		}
+		dueDate = d.UTC()
+	} else {
+		t, err := ParseJiraDate(targetEnd)
+		if err != nil {
+			return false
+		}
+		dueDate = t.UTC()
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dueDay := time.Date(dueDate.Year(), dueDate.Month(), dueDate.Day(), 0, 0, 0, 0, time.UTC)
+	oneMonthFromNow := today.AddDate(0, 1, 0)
+	return !dueDay.Before(today) && !dueDay.After(oneMonthFromNow)
+}
+
 // FetchReportIssues generates a report of issues
 func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, []*IssueData) {
 	logInfo("Generating report titled '%s'", cfg.Title)

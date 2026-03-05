@@ -165,6 +165,9 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	if IsStale(statusNormalized, targetEnd) {
 		emoji = "🔴"
 		trending = "overdue"
+	} else if trending == "not started" && IsDueWithinNextMonth(targetEnd) {
+		emoji = "🟡"
+		trending = "at risk"
 	}
 
 	// Handle parent info

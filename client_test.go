@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestExtractIssueData(t *testing.T) {
@@ -175,6 +176,32 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	dataDone := ExtractIssueData(doneIssue, "https://jira.example.com", "", "")
 	if dataDone.Trending != "done" || dataDone.Emoji != "🟣" {
 		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.Emoji)
+	}
+}
+
+func TestExtractIssueData_atRisk(t *testing.T) {
+	// Not started + due within next month -> at risk (🟡, trending "at risk")
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	oldKey := customFields["Target end"]
+	customFields["Target end"] = "targetEnd"
+	defer func() { customFields["Target end"] = oldKey }()
+
+	issue := map[string]any{
+		"key": "P-1",
+		"fields": map[string]any{
+			"summary":    "Due soon task",
+			"status":     map[string]any{"name": "Not Started"},
+			"created":    "2025-01-01T00:00:00Z",
+			"updated":    "2025-01-02T00:00:00Z",
+			"targetEnd":  tomorrow,
+		},
+	}
+	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	if data.Trending != "at risk" {
+		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
+	}
+	if data.Emoji != "🟡" {
+		t.Errorf("not started + due tomorrow: Emoji = %q, want 🟡", data.Emoji)
 	}
 }
 

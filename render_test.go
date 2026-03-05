@@ -76,6 +76,24 @@ func TestIsStale(t *testing.T) {
 	}
 }
 
+func TestIsDueWithinNextMonth(t *testing.T) {
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	twoMonths := time.Now().AddDate(0, 2, 0).Format("2006-01-02")
+
+	if IsDueWithinNextMonth("") {
+		t.Error("IsDueWithinNextMonth(\"\") want false")
+	}
+	if IsDueWithinNextMonth("None") {
+		t.Error("IsDueWithinNextMonth(None) want false")
+	}
+	if !IsDueWithinNextMonth(tomorrow) {
+		t.Error("IsDueWithinNextMonth(tomorrow) want true")
+	}
+	if IsDueWithinNextMonth(twoMonths) {
+		t.Error("IsDueWithinNextMonth(2 months) want false")
+	}
+}
+
 func TestRenderMarkdownReport(t *testing.T) {
 	issues := []*IssueData{
 		{
