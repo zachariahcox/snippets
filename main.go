@@ -246,15 +246,39 @@ func IsDueWithinNextMonth(targetEnd string) bool {
 	return !dueDay.Before(today) && !dueDay.After(oneMonthFromNow)
 }
 
-// FetchReportIssues generates a report of issues
-func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, []*IssueData) {
+// FetchReportIssues generates a report of issues. It tries the cache first; on hit it returns
+// cached data (client may be nil for cache-only lookup). On cache miss with client == nil it
+// returns ErrCacheMiss. On cache miss with client != nil it fetches from Jira, writes the
+// cache, and returns the result.
+func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, []*IssueData, error) {
 	logInfo("Generating report titled '%s'", cfg.Title)
+
+	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.ShowChildren)
+	if err := EnsureCacheDir(); err != nil {
+		logWarning("Cache dir unavailable: %v", err)
+	} else {
+		_ = PruneCache(cacheTTL)
+		path, err := cachePath(key)
+		if err == nil && CacheValid(path, cacheTTL) {
+			parentIssues, childIssues, err := ReadCache(path)
+			if err == nil {
+				logInfo("Using cached results (valid for 30m).")
+				return parentIssues, childIssues, nil
+			}
+			logDebug("Cache read failed: %v", err)
+		}
+	}
+
+	if client == nil {
+		return nil, nil, ErrCacheMiss
+	}
+
 	var parentIssues []*IssueData
 	if cfg.JQLQuery != "" {
 		issues, err := client.GetIssuesFromQuery(cfg.JQLQuery)
 		if err != nil {
 			logError("JQL query failed: %v", err)
-			return nil, nil
+			return nil, nil, err
 		}
 		parentIssues = issues
 
@@ -314,7 +338,16 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 		}
 	}
 
-	return parentIssues, childIssues
+	// Write cache for next run
+	if path, err := cachePath(key); err == nil {
+		if wErr := WriteCache(path, parentIssues, childIssues); wErr != nil {
+			logWarning("Failed to write cache: %v", wErr)
+		} else {
+			logDebug("Cached results to %s", path)
+		}
+	}
+
+	return parentIssues, childIssues, nil
 }
 
 func main() {
@@ -337,6 +370,7 @@ func main() {
 	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
 	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
+	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Usage = func() {
@@ -377,14 +411,12 @@ Examples:
 		os.Exit(0)
 	}
 
-	// Load credentials from env and optionally ~/.snippets/creds.sh
-	server, apiToken, email, err := loadJiraCreds("")
-	if err != nil {
-		logError("%v", err)
-		os.Exit(1)
-	}
-	if email == "" {
-		logDebug("JIRA_EMAIL is not set. Set the env var or export it from ~/.snippets/creds.sh for Cloud.")
+	if *clearCache {
+		if err := ClearCache(); err != nil {
+			logError("Failed to clear cache: %v", err)
+			os.Exit(1)
+		}
+		logInfo("Cache cleared.")
 	}
 
 	// Merge short flags
@@ -469,14 +501,6 @@ Examples:
 		*title = "Snippets!"
 	}
 
-	// Connect to Jira
-	client, err := NewJiraClient(server, apiToken, email)
-	if err != nil {
-		logError("%v", err)
-		os.Exit(1)
-	}
-
-	// Fetch issues and render report(s)
 	cfg := &ReportConfig{
 		Title:          *title,
 		ShowChildren:   *children,
@@ -490,13 +514,46 @@ Examples:
 		SimpleOutput:   *simpleOutput,
 		JQLQuery:       *jqlQuery,
 	}
+
+	// Load credentials and connect to Jira
+	server, apiToken, email, err := loadJiraCreds("")
+	if err != nil {
+		logError("%v", err)
+		os.Exit(1)
+	}
+	if email == "" {
+		logDebug("JIRA_EMAIL is not set. Set the env var or export it from ~/.snippets/creds.sh for Cloud.")
+	}
+
+	// load client
+	var client *JiraClient
+	client, err = NewJiraClient(server, apiToken, email)
+	if err != nil {
+		logError("%v", err)
+		os.Exit(1)
+	}
+
+	// ensure cache dir
+	if err := EnsureCacheDir(); err != nil {
+		logWarning("Could not ensure cache dir: %v", err)
+	}
+
+	// generate report
 	if *individual {
 		for _, issueKey := range issueKeys {
-			parentIssues, childIssues := FetchReportIssues(client, []string{issueKey}, cfg)
+			parentIssues, childIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)
+			if err != nil {
+				logError("%v", err)
+				os.Exit(1)
+			}
 			RenderReport(parentIssues, childIssues, cfg)
 		}
 	} else {
-		parentIssues, childIssues := FetchReportIssues(client, issueKeys, cfg)
+		parentIssues, childIssues, err := FetchReportIssues(client, issueKeys, cfg)
+		if err != nil {
+			logError("%v", err)
+			os.Exit(1)
+		}
 		RenderReport(parentIssues, childIssues, cfg)
 	}
 }
