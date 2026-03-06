@@ -30,6 +30,8 @@ func RenderReport(parentIssues []*IssueData, childIssues []*IssueData, cfg *Repo
 		outputData = RenderSlackReport(issuesToRender, cfg)
 	} else if cfg.URLOutput {
 		outputData = RenderURLReport(issuesToRender, cfg)
+	} else if cfg.SimpleOutput {
+		outputData = RenderSimpleReport(issuesToRender, cfg)
 	} else {
 		outputData = RenderMarkdownReport(issuesToRender, cfg)
 	}
@@ -183,6 +185,30 @@ func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
 		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
+}
+
+// RenderSimpleReport renders one line per issue:
+func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
+	if len(issues) == 0 {
+		return ""
+	}
+	// Compute max rune width of "emoji status" so we can pad and align keys
+	maxPrefix := 0
+	for _, issue := range issues {
+		prefix := issue.Emoji + " " + issue.Status
+		if n := len([]rune(prefix)); n > maxPrefix {
+			maxPrefix = n
+		}
+	}
+	var lines []string
+	for _, issue := range issues {
+		summary := strings.ReplaceAll(issue.Summary, "\n", " ")
+		prefix := issue.Emoji + " " + issue.Status
+		pad := maxPrefix - len([]rune(prefix))
+		lines = append(lines, prefix+strings.Repeat(" ", pad)+" "+issue.Key+" "+summary)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // serverBaseFromIssueURL returns the Jira server base URL (e.g. https://jira.example.com) from an issue browse URL.

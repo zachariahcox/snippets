@@ -137,6 +137,7 @@ type ReportConfig struct {
 	CSVOutput      bool
 	SlackOutput    bool
 	URLOutput      bool
+	SimpleOutput   bool
 	JQLQuery       string
 }
 
@@ -335,6 +336,7 @@ func main() {
 	csvOutput := flag.Bool("csv", false, "Output in CSV format ('cat separated value': 🐱)")
 	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
+	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	flag.Usage = func() {
@@ -485,6 +487,7 @@ Examples:
 		CSVOutput:      *csvOutput,
 		SlackOutput:    *slackOutput,
 		URLOutput:      *urlOutput,
+		SimpleOutput:   *simpleOutput,
 		JQLQuery:       *jqlQuery,
 	}
 	if *individual {

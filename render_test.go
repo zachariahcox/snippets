@@ -397,6 +397,27 @@ func TestRenderURLReport_empty(t *testing.T) {
 	}
 }
 
+func TestRenderSimpleReport(t *testing.T) {
+	issues := []*IssueData{
+		{Key: "A-1", Summary: "First task", Status: "in progress", Emoji: "🟢", URL: "https://jira/browse/A-1"},
+		{Key: "A-2", Summary: "Second task", Status: "not started", Emoji: "⚪", URL: "https://jira/browse/A-2"},
+	}
+	cfg := &ReportConfig{}
+	out := RenderSimpleReport(issues, cfg)
+	if out == "" {
+		t.Fatal("RenderSimpleReport returned empty string")
+	}
+	if strings.Contains(out, "https://") || strings.Contains(out, "jira") {
+		t.Error("simple output must not contain URLs")
+	}
+	if !strings.Contains(out, "🟢 in progress A-1 First task") {
+		t.Errorf("expected emoji status key summary line, got: %s", out)
+	}
+	if !strings.Contains(out, "⚪ not started A-2 Second task") {
+		t.Errorf("expected second line, got: %s", out)
+	}
+}
+
 func TestServerBaseFromIssueURL(t *testing.T) {
 	if got := serverBaseFromIssueURL("https://jirasw.nvidia.com/browse/SCM-1079"); got != "https://jirasw.nvidia.com" {
 		t.Errorf("serverBaseFromIssueURL = %q, want https://jirasw.nvidia.com", got)
