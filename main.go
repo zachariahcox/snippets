@@ -274,7 +274,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	if err := EnsureCacheDir(); err != nil {
 		logWarning("Cache dir unavailable: %v", err)
 	} else {
-		_ = PruneCache(cacheTTL)
+		// Check cache first without pruning (pruning does ReadDir+Stat on every file and can be slow).
 		path, err := cachePath(key)
 		if err == nil && CacheValid(path, cacheTTL) {
 			parentIssues, childIssues, err := ReadCache(path)
@@ -289,6 +289,9 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	if client == nil {
 		return nil, nil, ErrCacheMiss
 	}
+
+	// Prune only when we're about to fetch (and possibly write); avoids slow ReadDir+Stat on cache-hit path.
+	_ = PruneCache(cacheTTL)
 
 	var parentIssues []*IssueData
 	if cfg.JQLQuery != "" {
