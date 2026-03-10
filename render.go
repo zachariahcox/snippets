@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -187,28 +189,32 @@ func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
 	return strings.Join(result, "\n")
 }
 
-// RenderSimpleReport renders one line per issue:
+// RenderSimpleReport renders one line per issue as an aligned table using text/tabwriter.
 func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 	if len(issues) == 0 {
 		return ""
 	}
-	// Compute max rune width of "emoji status" so we can pad and align keys
-	maxPrefix := 0
+	var buf bytes.Buffer
+	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	for _, issue := range issues {
-		prefix := issue.Emoji + " " + issue.Status
-		if n := len([]rune(prefix)); n > maxPrefix {
-			maxPrefix = n
+		days, ok := DaysFromNow(issue.TargetEnd)
+		dueStr := "N/A"
+		if ok {
+			dueStr = fmt.Sprintf("due in %d days", days)
+		} else {
+			dueStr = "due in N/A"
 		}
-	}
-	var lines []string
-	for _, issue := range issues {
 		summary := strings.ReplaceAll(issue.Summary, "\n", " ")
-		prefix := issue.Emoji + " " + issue.Status
-		pad := maxPrefix - len([]rune(prefix))
-		lines = append(lines, prefix+strings.Repeat(" ", pad)+" "+issue.Key+" "+summary)
+		fmt.Fprintf(tw, "%s\t[%s]\t%s\t%s\t%s\n",
+			issue.Emoji,
+			issue.Status,
+			dueStr,
+			issue.Key,
+			summary)
 	}
-	return strings.Join(lines, "\n")
+	tw.Flush()
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // serverBaseFromIssueURL returns the Jira server base URL (e.g. https://jira.example.com) from an issue browse URL.
@@ -273,7 +279,7 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 
 		filteredIssues = append(filteredIssues, issue)
 	}
-	logInfo("Filtered %d issues", len(issues)-len(filteredIssues))
+	logInfo("Filters excluded %d issues. %d issues remain.", len(issues)-len(filteredIssues), len(filteredIssues))
 
 	// Sort issues by trending, target end, updated
 	sort.Slice(filteredIssues, func(i, j int) bool {
@@ -329,6 +335,33 @@ func FormatDate(dateStr string) string {
 		return dateStr
 	}
 	return t.Format("2006-01-02")
+}
+
+// DaysFromNow returns the number of days from today for the given date string.
+// Positive = future, negative = past. The second return is false if the date cannot be parsed.
+func DaysFromNow(dateStr string) (int, bool) {
+	if dateStr == "" || dateStr == "None" {
+		return 0, false
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var target time.Time
+	if !strings.Contains(dateStr, "T") {
+		t, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return 0, false
+		}
+		target = t.UTC()
+	} else {
+		t, err := ParseJiraDate(dateStr)
+		if err != nil {
+			return 0, false
+		}
+		target = t.UTC()
+	}
+	targetDay := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(targetDay.Sub(today).Hours() / 24)
+	return days, true
 }
 
 // FormatTimestampWithLink formats a timestamp as a markdown link

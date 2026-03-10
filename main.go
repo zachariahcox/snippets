@@ -141,6 +141,23 @@ type ReportConfig struct {
 	JQLQuery       string
 }
 
+func (c *ReportConfig) String() string {
+	if c == nil {
+		return "nil"
+	}
+	since := ""
+	if c.UpdatedAfter != nil {
+		since = c.UpdatedAfter.Format("2006-01-02")
+	}
+	noComment := ""
+	if c.NoCommentAfter != nil {
+		noComment = c.NoCommentAfter.Format("2006-01-02")
+	}
+	return fmt.Sprintf("title=%q jql=%q children=%t since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t",
+		c.Title, c.JQLQuery, c.ShowChildren, since, noComment, c.OutputFile,
+		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput, c.SimpleOutput)
+}
+
 // ParseSince parses --since: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days).
 // now is used for the "days ago" calculation (pass time.Now().UTC() in production).
 func ParseSince(s string, now time.Time) (*time.Time, error) {
@@ -251,7 +268,7 @@ func IsDueWithinNextMonth(targetEnd string) bool {
 // returns ErrCacheMiss. On cache miss with client != nil it fetches from Jira, writes the
 // cache, and returns the result.
 func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, []*IssueData, error) {
-	logInfo("Generating report titled '%s'", cfg.Title)
+	logInfo("Fetching issues for configuration: %v", cfg)
 
 	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.ShowChildren)
 	if err := EnsureCacheDir(); err != nil {
@@ -262,7 +279,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 		if err == nil && CacheValid(path, cacheTTL) {
 			parentIssues, childIssues, err := ReadCache(path)
 			if err == nil {
-				logInfo("Using cached results (valid for 30m).")
+				logInfo("Using cached results at %s.", path)
 				return parentIssues, childIssues, nil
 			}
 			logDebug("Cache read failed: %v", err)
@@ -387,15 +404,6 @@ Environment variables:
   JIRA_API_TOKEN  - API token or Personal Access Token (required)
   JIRA_EMAIL      - Your email/username (required for Cloud, optional for Server)
 
-For Jira Cloud (*.atlassian.net):
-  export JIRA_SERVER="https://mycompany.atlassian.net"
-  export JIRA_EMAIL="you@company.com"
-  export JIRA_API_TOKEN="<token from id.atlassian.com>"
-
-For Jira Server/Data Center:
-  export JIRA_SERVER="https://jira.company.com"
-  export JIRA_API_TOKEN="<Personal Access Token from Jira profile>"
-
 Examples:
   snippets PROJECT-123 PROJECT-456
   snippets --jql "project = MYPROJ AND status != Done"
@@ -462,7 +470,11 @@ Examples:
 		os.Exit(1)
 	}
 
-	logInfo("Processing %d issues...", len(issueKeys))
+	if *jqlQuery != "" {
+		logInfo("Running JQL query: %s", *jqlQuery)
+	} else {
+		logInfo("Processing %d issues...", len(issueKeys))
+	}
 
 	// Parse since date: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days)
 	var since *time.Time
@@ -474,7 +486,7 @@ Examples:
 		}
 		since = t
 		if since != nil {
-			logInfo("Filtering out issues updated after %s", since.Format("2006-01-02"))
+			logInfo("since filter: include issues updated after %s", since.Format("2006-01-02"))
 		}
 	}
 
@@ -483,7 +495,7 @@ Examples:
 	if *needsUpdate > 0 {
 		t := time.Now().UTC().AddDate(0, 0, -*needsUpdate)
 		noCommentAfter = &t
-		logInfo("Filtering out issues with any comments after %s", noCommentAfter)
+		logInfo("needs-update filter: include issues with a comment after %s", noCommentAfter)
 	}
 
 	// Remove existing output file
@@ -515,6 +527,19 @@ Examples:
 		JQLQuery:       *jqlQuery,
 	}
 
+	// Try cache first when not in individual mode (skip Jira entirely on hit)
+	if !*individual {
+		parentIssues, childIssues, err := FetchReportIssues(nil, issueKeys, cfg)
+		if err == nil {
+			RenderReport(parentIssues, childIssues, cfg)
+			os.Exit(0)
+		}
+		if err != ErrCacheMiss {
+			logError("%v", err)
+			os.Exit(1)
+		}
+	}
+
 	// Load credentials and connect to Jira
 	server, apiToken, email, err := loadJiraCreds("")
 	if err != nil {
@@ -524,8 +549,6 @@ Examples:
 	if email == "" {
 		logDebug("JIRA_EMAIL is not set. Set the env var or export it from ~/.snippets/creds.sh for Cloud.")
 	}
-
-	// load client
 	var client *JiraClient
 	client, err = NewJiraClient(server, apiToken, email)
 	if err != nil {
@@ -533,12 +556,6 @@ Examples:
 		os.Exit(1)
 	}
 
-	// ensure cache dir
-	if err := EnsureCacheDir(); err != nil {
-		logWarning("Could not ensure cache dir: %v", err)
-	}
-
-	// generate report
 	if *individual {
 		for _, issueKey := range issueKeys {
 			parentIssues, childIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)

@@ -63,3 +63,48 @@ func TestCacheValid(t *testing.T) {
 		t.Error("recent file should be valid")
 	}
 }
+
+// TestFetchReportIssues_usesCache verifies that FetchReportIssues returns cached data when the
+// cache is primed, so tests (and the real binary) can rely on cache hits.
+func TestFetchReportIssues_usesCache(t *testing.T) {
+	dir := t.TempDir()
+	oldFn := cacheDirFn
+	cacheDirFn = func() (string, error) { return dir, nil }
+	defer func() { cacheDirFn = oldFn }()
+
+	if err := EnsureCacheDir(); err != nil {
+		t.Fatalf("EnsureCacheDir: %v", err)
+	}
+
+	cfg := &ReportConfig{
+		Title:        "Test",
+		ShowChildren: false,
+		JQLQuery:     "",
+	}
+	issueKeys := []string{"P-1"}
+
+	// Prime the cache with the same key FetchReportIssues would use
+	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.ShowChildren)
+	path, err := cachePath(key)
+	if err != nil {
+		t.Fatalf("cachePath: %v", err)
+	}
+	parent := []*IssueData{
+		{Key: "P-1", Summary: "Cached issue", Status: "done", Emoji: "🟣"},
+	}
+	if err := WriteCache(path, parent, nil); err != nil {
+		t.Fatalf("WriteCache: %v", err)
+	}
+
+	// FetchReportIssues with nil client should hit the cache
+	gotParent, gotChild, err := FetchReportIssues(nil, issueKeys, cfg)
+	if err != nil {
+		t.Fatalf("FetchReportIssues (cache hit): %v", err)
+	}
+	if len(gotParent) != 1 || gotParent[0].Key != "P-1" || gotParent[0].Summary != "Cached issue" {
+		t.Errorf("cache hit: got parent %+v", gotParent)
+	}
+	if len(gotChild) != 0 {
+		t.Errorf("cache hit: got child %+v", gotChild)
+	}
+}

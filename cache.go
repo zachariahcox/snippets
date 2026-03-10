@@ -24,13 +24,18 @@ type cacheEntry struct {
 	ChildIssues  []*IssueData `json:"child_issues"`
 }
 
-// CacheDir returns the cache directory (~/.snippets/cache).
-func CacheDir() (string, error) {
+// cacheDirFn is used by CacheDir; tests can override to use a temp dir.
+var cacheDirFn = func() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
 	return filepath.Join(home, ".snippets", "cache"), nil
+}
+
+// CacheDir returns the cache directory (~/.snippets/cache by default).
+func CacheDir() (string, error) {
+	return cacheDirFn()
 }
 
 // CacheKey returns a deterministic filename-safe key for the query (JQL or sorted keys + showChildren).

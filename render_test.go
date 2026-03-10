@@ -94,6 +94,44 @@ func TestIsDueWithinNextMonth(t *testing.T) {
 	}
 }
 
+func TestDaysFromNow(t *testing.T) {
+	today := time.Now().UTC().Format("2006-01-02")
+	tomorrow := time.Now().AddDate(0, 0, 1).UTC().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).UTC().Format("2006-01-02")
+	nextWeek := time.Now().AddDate(0, 0, 7).UTC().Format("2006-01-02")
+	lastWeek := time.Now().AddDate(0, 0, -7).UTC().Format("2006-01-02")
+
+	// Invalid or empty -> ok=false
+	for _, in := range []string{"", "None", "not-a-date", "2025-13-45"} {
+		if _, ok := DaysFromNow(in); ok {
+			t.Errorf("DaysFromNow(%q) want ok=false", in)
+		}
+	}
+
+	// Date-only format: positive = future, negative = past
+	if d, ok := DaysFromNow(today); !ok || d != 0 {
+		t.Errorf("DaysFromNow(today) = %d, ok=%v, want 0, true", d, ok)
+	}
+	if d, ok := DaysFromNow(tomorrow); !ok || d != 1 {
+		t.Errorf("DaysFromNow(tomorrow) = %d, ok=%v, want 1, true", d, ok)
+	}
+	if d, ok := DaysFromNow(yesterday); !ok || d != -1 {
+		t.Errorf("DaysFromNow(yesterday) = %d, ok=%v, want -1, true", d, ok)
+	}
+	if d, ok := DaysFromNow(nextWeek); !ok || d != 7 {
+		t.Errorf("DaysFromNow(nextWeek) = %d, ok=%v, want 7, true", d, ok)
+	}
+	if d, ok := DaysFromNow(lastWeek); !ok || d != -7 {
+		t.Errorf("DaysFromNow(lastWeek) = %d, ok=%v, want -7, true", d, ok)
+	}
+
+	// Datetime format (Jira-style) uses same day
+	tomorrowDT := time.Now().AddDate(0, 0, 1).UTC().Format(time.RFC3339)
+	if d, ok := DaysFromNow(tomorrowDT); !ok || d != 1 {
+		t.Errorf("DaysFromNow(datetime tomorrow) = %d, ok=%v, want 1, true", d, ok)
+	}
+}
+
 func TestRenderMarkdownReport(t *testing.T) {
 	issues := []*IssueData{
 		{
@@ -410,11 +448,11 @@ func TestRenderSimpleReport(t *testing.T) {
 	if strings.Contains(out, "https://") || strings.Contains(out, "jira") {
 		t.Error("simple output must not contain URLs")
 	}
-	if !strings.Contains(out, "🟢 in progress A-1 First task") {
-		t.Errorf("expected emoji status key summary line, got: %s", out)
+	if !strings.Contains(out, "🟢") || !strings.Contains(out, "[in progress]") || !strings.Contains(out, "A-1") || !strings.Contains(out, "First task") {
+		t.Errorf("expected first line with emoji, status, key, summary; got: %s", out)
 	}
-	if !strings.Contains(out, "⚪ not started A-2 Second task") {
-		t.Errorf("expected second line, got: %s", out)
+	if !strings.Contains(out, "⚪") || !strings.Contains(out, "[not started]") || !strings.Contains(out, "A-2") || !strings.Contains(out, "Second task") {
+		t.Errorf("expected second line with emoji, status, key, summary; got: %s", out)
 	}
 }
 
