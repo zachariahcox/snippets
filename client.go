@@ -22,30 +22,39 @@ type JiraClient struct {
 }
 
 // Status categories mapped to emojis
-var statusCategories = map[string]string{
-	"done":           "🟣",
-	"closed":         "🟣",
-	"resolved":       "🟣",
-	"in progress":    "🟢",
-	"at risk":        "🟡",
-	"off track":      "🔴",
-	"blocked":        "🔴",
-	"not started":    "⚪",
-	"ready for work": "⚪",
-	"vetting":        "⚪",
-	"new":            "⚪",
+var trendingEmojis = map[string]string{
+	"done":        "🟣",
+	"on track":    "🟢",
+	"at risk":     "🟡",
+	"off track":   "🔴",
+	"not started": "⚪",
+}
+
+var trendingOrder = []string{
+	"done",
+	"on track",
+	"at risk",
+	"off track",
+	"not started",
+}
+
+// statusEmojis maps status to action/semantic icons (play, check, stop, etc.)
+var statusEmojis = map[string]string{
+	"closed":         "❎",
+	"resolved":       "🎉",
+	"in progress":    "🚀",
+	"blocked":        "🛑",
+	"ready for work": "🪏",
+	"vetting":        "🤔",
+	"new":            "✨",
 }
 
 // statusOrder defines the sort priority for statuses
 var statusOrder = []string{
-	"done",
 	"closed",
 	"resolved",
 	"in progress",
-	"at risk",
-	"off track",
 	"blocked",
-	"not started",
 	"ready for work",
 	"vetting",
 	"new",
@@ -66,6 +75,7 @@ type IssueData struct {
 	URL           string
 	Summary       string
 	Status        string
+	StatusEmoji   string `json:"status_emoji"`
 	Assignee      string
 	Priority      string
 	Created       string
@@ -75,8 +85,9 @@ type IssueData struct {
 	ParentSummary string
 	ParentURL     string
 	Trending      string
-	Emoji         string
+	TrendingEmoji string `json:"Emoji"` // keep "Emoji" for cache compat
 	Comment       IssueComment
+	Type          string // one of "initiative","epic", "story","subtask"
 }
 
 // NewJiraClient creates a new Jira client
@@ -120,18 +131,18 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	fields := getMap(issue, "fields")
 	issueKey := getString(issue, "key", "")
 
+	// Get type
+	typeObj := getMap(fields, "issuetype")
+	typeRaw := getString(typeObj, "name", "Unknown")
+	typeNormalized := strings.ToLower(strings.TrimSpace(typeRaw))
+
 	// Get status
 	statusObj := getMap(fields, "status")
 	statusRaw := getString(statusObj, "name", "Unknown")
 	statusNormalized := strings.ToLower(strings.TrimSpace(statusRaw))
-	trending := "on track"
-	switch statusNormalized {
-	case "done", "closed", "resolved":
-		trending = "done"
-	case "not started", "ready for work", "vetting", "new":
-		trending = "not started"
-	default:
-		trending = statusNormalized
+	statusEmoji := "❓"
+	if value, ok := statusEmojis[statusNormalized]; ok {
+		statusEmoji = value
 	}
 
 	// Get assignee
@@ -155,21 +166,6 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	// Build issue URL
 	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
 
-	// Get emoji from normalized status
-	emoji := "❓"
-	if value, ok := statusCategories[statusNormalized]; ok {
-		emoji = value
-	}
-
-	// Override with overdue when past target date
-	if IsStale(statusNormalized, targetEnd) {
-		emoji = "🔴"
-		trending = "overdue"
-	} else if trending == "not started" && IsDueWithinNextMonth(targetEnd) {
-		emoji = "🟡"
-		trending = "at risk"
-	}
-
 	// Handle parent info
 	if parentKey == "" {
 		parentKey = issueKey
@@ -182,7 +178,35 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 		parentURL = fmt.Sprintf("%s/browse/%s", serverURL, parentKey)
 	}
 
+	// approximate trending based on status
+	trending := "on track"
+	switch statusNormalized {
+	case "closed", "resolved":
+		trending = "done"
+	case "in progress":
+		trending = "on track"
+	case "not started", "new", "vetting", "ready for work":
+		if IsDueWithinNextMonth(targetEnd) {
+			trending = "at risk"
+		} else {
+			trending = "not started"
+		}
+	case "blocked":
+		trending = "off track"
+	default:
+		trending = statusNormalized
+	}
+	// anything overdue is off track
+	if trending != "done" && IsStale(targetEnd) {
+		trending = "off track"
+	}
+	trendingEmoji := "❓"
+	if value, ok := trendingEmojis[trending]; ok {
+		trendingEmoji = value
+	}
+
 	return &IssueData{
+		Type:          typeNormalized,
 		Key:           issueKey,
 		URL:           issueURL,
 		Summary:       summary,
@@ -196,7 +220,8 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 		ParentSummary: parentSummary,
 		ParentURL:     parentURL,
 		Trending:      trending,
-		Emoji:         emoji,
+		TrendingEmoji: trendingEmoji,
+		StatusEmoji:   statusEmoji,
 	}
 }
 
@@ -301,7 +326,7 @@ func (client *JiraClient) GetLinkedIssues(parentKey, parentSummary string) []*Is
 
 // getIssue fetches a single issue by key
 func (c *JiraClient) getIssue(issueKey string) (map[string]any, error) {
-	fields := "summary,status,assignee,priority,created,updated,subtasks,issuelinks"
+	fields := "summary,status,issuetype,assignee,priority,created,updated,subtasks,issuelinks"
 	// Add custom field IDs
 	for _, id := range customFields {
 		if id != "" {
@@ -333,7 +358,7 @@ func (c *JiraClient) loadCustomFields(fieldNames map[string]string) error {
 // searchIssues searches for issues using JQL with pagination
 func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any, error) {
 	var b strings.Builder
-	b.WriteString("summary,status,assignee,priority,created,updated")
+	b.WriteString("summary,status,issuetype,assignee,priority,created,updated")
 
 	// Load custom fields first
 	if err := c.loadCustomFields(customFields); err != nil {

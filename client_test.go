@@ -27,8 +27,8 @@ func TestExtractIssueData(t *testing.T) {
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)
 	}
-	if data.Trending != "in progress" {
-		t.Errorf("Trending = %q, want 'in progress'", data.Trending)
+	if data.Trending != "on track" {
+		t.Errorf("Trending = %q, want 'on track'", data.Trending)
 	}
 	if data.Assignee != "Alice" {
 		t.Errorf("Assignee = %q, want Alice", data.Assignee)
@@ -79,17 +79,16 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		},
 	}
 	tests := []struct {
-		statusName   string
-		wantTrending string
-		wantEmoji    string
+		statusName        string
+		wantTrending      string
+		wantTrendingEmoji string
 	}{
-		{"Done", "done", "🟣"},
 		{"Resolved", "done", "🟣"},
 		{"Closed", "done", "🟣"},
-		{"In Progress", "in progress", "🟢"},
+		{"In Progress", "on track", "🟢"},
 		{"Not Started", "not started", "⚪"},
 		{"New", "not started", "⚪"},
-		{"Blocked", "blocked", "🔴"},
+		{"Blocked", "off track", "🔴"},
 		{"At Risk", "at risk", "🟡"},
 	}
 	for _, tt := range tests {
@@ -100,8 +99,8 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		if data.Trending != tt.wantTrending {
 			t.Errorf("status %q: Trending = %q, want %q", tt.statusName, data.Trending, tt.wantTrending)
 		}
-		if data.Emoji != tt.wantEmoji {
-			t.Errorf("status %q: Emoji = %q, want %q", tt.statusName, data.Emoji, tt.wantEmoji)
+		if data.TrendingEmoji != tt.wantTrendingEmoji {
+			t.Errorf("status %q: Emoji = %q, want %q", tt.statusName, data.TrendingEmoji, tt.wantTrendingEmoji)
 		}
 	}
 }
@@ -159,8 +158,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	// Target end comes from custom field; customFields["Target end"] may be unset.
 	// If set in code, we'd need to inject. So test without target end first.
 	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
-	if data.Emoji != "🟢" {
-		t.Errorf("without target end: Emoji = %q, want 🟢", data.Emoji)
+	if data.TrendingEmoji != "🟢" {
+		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
 	// When target end is set via custom field we'd get overdue. Skip that unless we can set customFields.
 	// Test that done + past target does NOT become overdue
@@ -174,8 +173,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 		},
 	}
 	dataDone := ExtractIssueData(doneIssue, "https://jira.example.com", "", "")
-	if dataDone.Trending != "done" || dataDone.Emoji != "🟣" {
-		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.Emoji)
+	if dataDone.Trending != "done" || dataDone.TrendingEmoji != "🟣" {
+		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.TrendingEmoji)
 	}
 }
 
@@ -189,19 +188,19 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
-			"summary":    "Due soon task",
-			"status":     map[string]any{"name": "Not Started"},
-			"created":    "2025-01-01T00:00:00Z",
-			"updated":    "2025-01-02T00:00:00Z",
-			"targetEnd":  tomorrow,
+			"summary":   "Due soon task",
+			"status":    map[string]any{"name": "Not Started"},
+			"created":   "2025-01-01T00:00:00Z",
+			"updated":   "2025-01-02T00:00:00Z",
+			"targetEnd": tomorrow,
 		},
 	}
 	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
 	if data.Trending != "at risk" {
 		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
 	}
-	if data.Emoji != "🟡" {
-		t.Errorf("not started + due tomorrow: Emoji = %q, want 🟡", data.Emoji)
+	if data.TrendingEmoji != "🟡" {
+		t.Errorf("not started + due tomorrow: Emoji = %q, want 🟡", data.TrendingEmoji)
 	}
 }
 
@@ -217,8 +216,8 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)
 	}
-	if data.Trending != "in progress" {
-		t.Errorf("Trending = %q, want 'in progress'", data.Trending)
+	if data.Trending != "on track" {
+		t.Errorf("Trending = %q, want 'on track'", data.Trending)
 	}
 }
 

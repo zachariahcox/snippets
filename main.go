@@ -208,59 +208,49 @@ func ParseJiraDate(dateStr string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("could not parse date: %s", dateStr)
 }
 
-// IsStale returns true if the issue is past its target date and not done
-func IsStale(status string, targetEnd string) bool {
-	if status == "done" || status == "closed" || status == "resolved" {
-		return false
+// DaysFromNow returns the number of days from today for the given date string.
+// Positive = future, negative = past. The second return is false if the date cannot be parsed.
+func DaysFromNow(dateStr string) (int, bool) {
+	if dateStr == "" || dateStr == "None" {
+		return 0, false
 	}
-
-	if targetEnd == "" || targetEnd == "None" {
-		return false
-	}
-
 	now := time.Now().UTC()
-
-	// Check if it's a date-only string (no 'T')
-	if !strings.Contains(targetEnd, "T") {
-		dueDate, err := time.Parse("2006-01-02", targetEnd)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var target time.Time
+	if !strings.Contains(dateStr, "T") {
+		t, err := time.Parse("2006-01-02", dateStr)
 		if err != nil {
-			return false
+			return 0, false
 		}
-		return now.Truncate(24 * time.Hour).After(dueDate)
+		target = t.UTC()
+	} else {
+		t, err := ParseJiraDate(dateStr)
+		if err != nil {
+			return 0, false
+		}
+		target = t.UTC()
 	}
+	targetDay := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(targetDay.Sub(today).Hours() / 24)
+	return days, true
+}
 
-	targetTime, err := ParseJiraDate(targetEnd)
-	if err != nil {
+// IsStale returns true if the issue is past its target date and not done
+func IsStale(targetEnd string) bool {
+	days, ok := DaysFromNow(targetEnd)
+	if !ok {
 		return false
 	}
-
-	return now.After(targetTime.UTC())
+	return days < 0
 }
 
 // IsDueWithinNextMonth returns true if the issue has a target end date within the next calendar month and is not done.
 func IsDueWithinNextMonth(targetEnd string) bool {
-	if targetEnd == "" || targetEnd == "None" {
+	days, ok := DaysFromNow(targetEnd)
+	if !ok {
 		return false
 	}
-	now := time.Now().UTC()
-	var dueDate time.Time
-	if !strings.Contains(targetEnd, "T") {
-		d, err := time.Parse("2006-01-02", targetEnd)
-		if err != nil {
-			return false
-		}
-		dueDate = d.UTC()
-	} else {
-		t, err := ParseJiraDate(targetEnd)
-		if err != nil {
-			return false
-		}
-		dueDate = t.UTC()
-	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	dueDay := time.Date(dueDate.Year(), dueDate.Month(), dueDate.Day(), 0, 0, 0, 0, time.UTC)
-	oneMonthFromNow := today.AddDate(0, 1, 0)
-	return !dueDay.Before(today) && !dueDay.After(oneMonthFromNow)
+	return days > 0 && days <= 30
 }
 
 // FetchReportIssues generates a report of issues. It tries the cache first; on hit it returns
@@ -427,7 +417,8 @@ Examples:
 			logError("Failed to clear cache: %v", err)
 			os.Exit(1)
 		}
-		logInfo("Cache cleared.")
+		fmt.Printf("Cache cleared.\n")
+		os.Exit(0)
 	}
 
 	// Merge short flags

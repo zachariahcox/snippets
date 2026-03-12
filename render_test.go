@@ -8,10 +8,10 @@ import (
 )
 
 func TestGetStatusPriority(t *testing.T) {
-	if got := GetStatusPriority("done"); got != 0 {
+	if got := GetStatusPriority("closed"); got != 0 {
 		t.Errorf("GetStatusPriority(done) = %d, want 0", got)
 	}
-	if got := GetStatusPriority("new"); got != 10 {
+	if got := GetStatusPriority("new"); got != 6 {
 		t.Errorf("GetStatusPriority(new) = %d, want 10", got)
 	}
 	if got := GetStatusPriority("unknown"); got != 999 {
@@ -56,23 +56,20 @@ func TestFormatDate(t *testing.T) {
 }
 
 func TestIsStale(t *testing.T) {
-	if IsStale("done", "2000-01-01") {
-		t.Error("IsStale(done, past date) want false")
+	if !IsStale("2000-01-01") {
+		t.Error("IsStale(2000-01-01) should be true")
 	}
-	if IsStale("closed", "2000-01-01") {
-		t.Error("IsStale(closed, past date) want false")
+	if !IsStale("2000-01-01") {
+		t.Error("IsStale(2000-01-01) should be true")
 	}
-	if IsStale("resolved", "2000-01-01") {
-		t.Error("IsStale(resolved, past date) want false")
+	if IsStale("") {
+		t.Error("IsStale(\"\") should be false")
 	}
-	if IsStale("in progress", "") {
-		t.Error("IsStale(in progress, \"\") want false")
+	if IsStale("None") {
+		t.Error("IsStale(None) should be false")
 	}
-	if IsStale("in progress", "None") {
-		t.Error("IsStale(in progress, None) want false")
-	}
-	if !IsStale("in progress", "2000-01-01") {
-		t.Error("IsStale(in progress, 2000-01-01) want true")
+	if !IsStale("2000-01-01") {
+		t.Error("IsStale(2000-01-01) should be true")
 	}
 }
 
@@ -135,15 +132,15 @@ func TestDaysFromNow(t *testing.T) {
 func TestRenderMarkdownReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:       "A-1",
-			URL:       "https://jira/a",
-			Summary:   "First",
-			Status:    "resolved",
-			Assignee:  "Alice",
-			TargetEnd: "2025-01-01",
-			Updated:   "2025-01-02",
-			Emoji:     "🟣",
-			Trending:  "done",
+			Key:           "A-1",
+			URL:           "https://jira/a",
+			Summary:       "First",
+			Status:        "resolved",
+			Assignee:      "Alice",
+			TargetEnd:     "2025-01-01",
+			Updated:       "2025-01-02",
+			TrendingEmoji: "🟣",
+			Trending:      "done",
 		},
 	}
 	cfg := &ReportConfig{Title: "abc"}
@@ -172,7 +169,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 			ParentURL:     "https://jira/browse/PROJ-123",
 			TargetEnd:     "2025-02-01",
 			Updated:       "2025-01-15",
-			Emoji:         "🟢",
+			TrendingEmoji: "🟢",
 			Trending:      "in progress",
 		},
 	}
@@ -303,15 +300,15 @@ func TestRenderJSONReport_empty(t *testing.T) {
 func TestRenderCSVReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:       "A-1",
-			URL:       "https://jira/a",
-			Summary:   "First issue",
-			Status:    "in progress",
-			Assignee:  "Alice",
-			TargetEnd: "2025-02-01",
-			Updated:   "2025-01-15",
-			Emoji:     "🟢",
-			Trending:  "in progress",
+			Key:           "A-1",
+			URL:           "https://jira/a",
+			Summary:       "First issue",
+			Status:        "in progress",
+			Assignee:      "Alice",
+			TargetEnd:     "2025-02-01",
+			Updated:       "2025-01-15",
+			TrendingEmoji: "🟢",
+			Trending:      "in progress",
 		},
 	}
 	cfg := &ReportConfig{}
@@ -337,12 +334,12 @@ func TestRenderCSVReport(t *testing.T) {
 func TestRenderCSVReport_children(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:       "PROJ-123-1",
-			Summary:   "Subtask",
-			ParentKey: "PROJ-123",
-			Assignee:  "Bob",
-			Emoji:     "🟢",
-			Trending:  "in progress",
+			Key:           "PROJ-123-1",
+			Summary:       "Subtask",
+			ParentKey:     "PROJ-123",
+			Assignee:      "Bob",
+			TrendingEmoji: "🟢",
+			Trending:      "in progress",
 		},
 	}
 	cfg := &ReportConfig{ShowChildren: true}
@@ -358,9 +355,9 @@ func TestRenderCSVReport_children(t *testing.T) {
 func TestRenderCSVReport_escapeSeparator(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Summary:  "Contains🐱emoji",
-			Emoji:    "🟢",
-			Trending: "in progress",
+			Summary:       "Contains🐱emoji",
+			TrendingEmoji: "🟢",
+			Trending:      "in progress",
 		},
 	}
 	cfg := &ReportConfig{}
@@ -373,21 +370,21 @@ func TestRenderCSVReport_escapeSeparator(t *testing.T) {
 func TestRenderSlackReport(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:       "A-1",
-			URL:       "https://jira/browse/A-1",
-			Summary:   "First issue",
-			Emoji:     "🟢",
-			Trending:  "in progress",
-			TargetEnd: "2025-02-01",
-			Comment:   IssueComment{Url: "https://jira/comment/1", Created: "2025-01-15"},
+			Key:           "A-1",
+			URL:           "https://jira/browse/A-1",
+			Summary:       "First issue",
+			TrendingEmoji: "🟢",
+			Trending:      "in progress",
+			TargetEnd:     "2025-02-01",
+			Comment:       IssueComment{Url: "https://jira/comment/1", Created: "2025-01-15"},
 		},
 		{
-			Key:       "A-2",
-			URL:       "https://jira/browse/A-2",
-			Summary:   "Second issue",
-			TargetEnd: "2025-02-02",
-			Emoji:     "🟣",
-			Trending:  "done",
+			Key:           "A-2",
+			URL:           "https://jira/browse/A-2",
+			Summary:       "Second issue",
+			TargetEnd:     "2025-02-02",
+			TrendingEmoji: "🟣",
+			Trending:      "done",
 		},
 	}
 	cfg := &ReportConfig{}
@@ -437,8 +434,8 @@ func TestRenderURLReport_empty(t *testing.T) {
 
 func TestRenderSimpleReport(t *testing.T) {
 	issues := []*IssueData{
-		{Key: "A-1", Summary: "First task", Status: "in progress", Emoji: "🟢", URL: "https://jira/browse/A-1"},
-		{Key: "A-2", Summary: "Second task", Status: "not started", Emoji: "⚪", URL: "https://jira/browse/A-2"},
+		{Key: "A-1", Summary: "First task", Status: "in progress", Type: "story", StatusEmoji: "▶️", TrendingEmoji: "🟢", URL: "https://jira/browse/A-1"},
+		{Key: "A-2", Summary: "Second task", Status: "ready for work", Type: "story", StatusEmoji: "🪏", TrendingEmoji: "⚪", URL: "https://jira/browse/A-2"},
 	}
 	cfg := &ReportConfig{}
 	out := RenderSimpleReport(issues, cfg)
@@ -448,11 +445,11 @@ func TestRenderSimpleReport(t *testing.T) {
 	if strings.Contains(out, "https://") || strings.Contains(out, "jira") {
 		t.Error("simple output must not contain URLs")
 	}
-	if !strings.Contains(out, "🟢") || !strings.Contains(out, "[in progress]") || !strings.Contains(out, "A-1") || !strings.Contains(out, "First task") {
-		t.Errorf("expected first line with emoji, status, key, summary; got: %s", out)
+	if !strings.Contains(out, "🟢") || !strings.Contains(out, "▶️") || !strings.Contains(out, "A-1") || !strings.Contains(out, "First task") {
+		t.Errorf("expected first line with emoji, status, type, key, summary; got: %s", out)
 	}
-	if !strings.Contains(out, "⚪") || !strings.Contains(out, "[not started]") || !strings.Contains(out, "A-2") || !strings.Contains(out, "Second task") {
-		t.Errorf("expected second line with emoji, status, key, summary; got: %s", out)
+	if !strings.Contains(out, "⚪") || !strings.Contains(out, "🪏") || !strings.Contains(out, "A-2") || !strings.Contains(out, "Second task") {
+		t.Errorf("expected second line with emoji, status, type, key, summary; got: %s", out)
 	}
 }
 

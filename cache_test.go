@@ -30,7 +30,7 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 	path := filepath.Join(dir, "test.json")
 
 	parent := []*IssueData{
-		{Key: "P-1", Summary: "One", Status: "done", Emoji: "🟣"},
+		{Key: "P-1", Summary: "One", Status: "done", TrendingEmoji: "🟣"},
 	}
 	child := []*IssueData{
 		{Key: "C-1", Summary: "Sub", Status: "in progress", ParentKey: "P-1"},
@@ -90,7 +90,7 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 		t.Fatalf("cachePath: %v", err)
 	}
 	parent := []*IssueData{
-		{Key: "P-1", Summary: "Cached issue", Status: "done", Emoji: "🟣"},
+		{Key: "P-1", Summary: "Cached issue", Status: "done", TrendingEmoji: "🟣"},
 	}
 	if err := WriteCache(path, parent, nil); err != nil {
 		t.Fatalf("WriteCache: %v", err)

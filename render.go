@@ -81,7 +81,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	for _, issue := range issues {
 		// Format cells
 		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
-		trendingWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
+		trendingWithEmoji := fmt.Sprintf("%s %s", issue.TrendingEmoji, issue.Trending)
 		targetEnd := FormatDate(issue.TargetEnd)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
 
@@ -124,52 +124,48 @@ func escapeCSVField(s string) string {
 func RenderCSVReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 
-	var result []string
-	if cfg.ShowChildren {
-		result = append(result, strings.Join([]string{
-			escapeCSVField("status"),
-			escapeCSVField("parent"),
-			escapeCSVField("issue"),
-			escapeCSVField("assignee"),
-			escapeCSVField("target date"),
-			escapeCSVField("last update"),
-		}, csvSep))
-	} else {
-		result = append(result, strings.Join([]string{
-			escapeCSVField("status"),
-			escapeCSVField("issue"),
-			escapeCSVField("assignee"),
-			escapeCSVField("target date"),
-			escapeCSVField("last update"),
-		}, csvSep))
+	headers := []string{
+		"key", "url", "summary", "status", "status_emoji", "assignee", "priority",
+		"created", "updated", "target_end", "parent_key", "parent_summary", "parent_url",
+		"trending", "trending_emoji", "type", "comment_url", "comment_created",
 	}
+	escapedHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		escapedHeaders[i] = escapeCSVField(h)
+	}
+	var result []string
+	result = append(result, strings.Join(escapedHeaders, csvSep))
 
 	for _, issue := range issues {
-		statusWithEmoji := fmt.Sprintf("%s %s", issue.Emoji, issue.Trending)
-		targetEnd := FormatDate(issue.TargetEnd)
-		lastUpdate := issue.Comment.Created
-		if lastUpdate == "" {
-			lastUpdate = "N/A"
+		commentCreated := issue.Comment.Created
+		if commentCreated == "" {
+			commentCreated = "N/A"
 		}
-
-		if cfg.ShowChildren {
-			result = append(result, strings.Join([]string{
-				escapeCSVField(statusWithEmoji),
-				escapeCSVField(issue.ParentKey),
-				escapeCSVField(issue.Summary),
-				escapeCSVField(issue.Assignee),
-				escapeCSVField(targetEnd),
-				escapeCSVField(lastUpdate),
-			}, csvSep))
-		} else {
-			result = append(result, strings.Join([]string{
-				escapeCSVField(statusWithEmoji),
-				escapeCSVField(issue.Summary),
-				escapeCSVField(issue.Assignee),
-				escapeCSVField(targetEnd),
-				escapeCSVField(lastUpdate),
-			}, csvSep))
+		row := []string{
+			issue.Key,
+			issue.URL,
+			issue.Summary,
+			issue.Status,
+			issue.StatusEmoji,
+			issue.Assignee,
+			issue.Priority,
+			issue.Created,
+			issue.Updated,
+			FormatDate(issue.TargetEnd),
+			issue.ParentKey,
+			issue.ParentSummary,
+			issue.ParentURL,
+			issue.Trending,
+			issue.TrendingEmoji,
+			issue.Type,
+			issue.Comment.Url,
+			commentCreated,
 		}
+		escapedRow := make([]string, len(row))
+		for i, v := range row {
+			escapedRow[i] = escapeCSVField(v)
+		}
+		result = append(result, strings.Join(escapedRow, csvSep))
 	}
 	return strings.Join(result, "\n")
 }
@@ -180,7 +176,7 @@ func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	var result []string
 	for i, issue := range issues {
-		line := fmt.Sprintf("%d. %s [%s](%s), (due %s)", i+1, issue.Emoji, issue.Summary, issue.URL, FormatDate(issue.TargetEnd))
+		line := fmt.Sprintf("%d. %s [%s](%s), (due %s)", i+1, issue.TrendingEmoji, issue.Summary, issue.URL, FormatDate(issue.TargetEnd))
 		if issue.Comment.Url != "" {
 			line += fmt.Sprintf(" ([last update](%s))", issue.Comment.Url)
 		}
@@ -196,7 +192,11 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 		return ""
 	}
 	var buf bytes.Buffer
+	// minwidth=4 so emoji columns get padding and align; tabwriter counts runes, not display width
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+
+	// columne headers: trending, status, due, type, key, summary
+	format := "%s\t%s\t%s\t%s\t%s\t%s\n"
 	for _, issue := range issues {
 		days, ok := DaysFromNow(issue.TargetEnd)
 		dueStr := "N/A"
@@ -205,13 +205,13 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 		} else {
 			dueStr = "due in N/A"
 		}
-		summary := strings.ReplaceAll(issue.Summary, "\n", " ")
-		fmt.Fprintf(tw, "%s\t[%s]\t%s\t%s\t%s\n",
-			issue.Emoji,
-			issue.Status,
+		fmt.Fprintf(tw, format,
+			issue.TrendingEmoji,
+			issue.StatusEmoji,
 			dueStr,
+			issue.Type,
 			issue.Key,
-			summary)
+			strings.ReplaceAll(issue.Summary, "\n", " "))
 	}
 	tw.Flush()
 	return strings.TrimRight(buf.String(), "\n")
@@ -281,11 +281,11 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 	}
 	logInfo("Filters excluded %d issues. %d issues remain.", len(issues)-len(filteredIssues), len(filteredIssues))
 
-	// Sort issues by trending, target end, updated
+	// Sort issues by status, target end, updated
 	sort.Slice(filteredIssues, func(i, j int) bool {
 		// By status priority
-		pi := GetStatusPriority(filteredIssues[i].Trending)
-		pj := GetStatusPriority(filteredIssues[j].Trending)
+		pi := GetStatusPriority(filteredIssues[i].Status)
+		pj := GetStatusPriority(filteredIssues[j].Status)
 		if pi != pj {
 			return pi < pj
 		}
@@ -335,33 +335,6 @@ func FormatDate(dateStr string) string {
 		return dateStr
 	}
 	return t.Format("2006-01-02")
-}
-
-// DaysFromNow returns the number of days from today for the given date string.
-// Positive = future, negative = past. The second return is false if the date cannot be parsed.
-func DaysFromNow(dateStr string) (int, bool) {
-	if dateStr == "" || dateStr == "None" {
-		return 0, false
-	}
-	now := time.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	var target time.Time
-	if !strings.Contains(dateStr, "T") {
-		t, err := time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return 0, false
-		}
-		target = t.UTC()
-	} else {
-		t, err := ParseJiraDate(dateStr)
-		if err != nil {
-			return 0, false
-		}
-		target = t.UTC()
-	}
-	targetDay := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, time.UTC)
-	days := int(targetDay.Sub(today).Hours() / 24)
-	return days, true
 }
 
 // FormatTimestampWithLink formats a timestamp as a markdown link
