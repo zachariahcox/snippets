@@ -136,6 +136,7 @@ func TestRenderMarkdownReport(t *testing.T) {
 			URL:           "https://jira/a",
 			Summary:       "First",
 			Status:        "resolved",
+			Type:          "story",
 			Assignee:      "Alice",
 			TargetEnd:     "2025-01-01",
 			Updated:       "2025-01-02",
@@ -154,6 +155,12 @@ func TestRenderMarkdownReport(t *testing.T) {
 	if !strings.Contains(out, "🟣 done") {
 		t.Errorf("trending mapping failed: %s", out)
 	}
+	if !strings.Contains(out, "| type |") {
+		t.Error("expected type column in markdown header")
+	}
+	if !strings.Contains(out, "story") {
+		t.Error("expected issue type (story) in markdown output")
+	}
 }
 
 func TestRenderMarkdownReport_children(t *testing.T) {
@@ -163,6 +170,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 			URL:           "https://jira/browse/PROJ-123-1",
 			Summary:       "Subtask one",
 			Status:        "in progress",
+			Type:          "subtask",
 			Assignee:      "Bob",
 			ParentKey:     "PROJ-123",
 			ParentSummary: "Parent epic",
@@ -178,6 +186,9 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
 	}
+	if !strings.Contains(out, "| type |") {
+		t.Error("expected type column in markdown header")
+	}
 	if !strings.Contains(out, "| parent |") {
 		t.Error("expected parent column header when ShowChildren=true")
 	}
@@ -186,6 +197,9 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 	}
 	if !strings.Contains(out, "PROJ-123") {
 		t.Error("output missing parent key")
+	}
+	if !strings.Contains(out, "subtask") {
+		t.Error("expected issue type (subtask) in markdown output")
 	}
 }
 

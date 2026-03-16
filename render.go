@@ -68,13 +68,13 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
-	// Render header row
+	// Render header row (type between trending and status)
 	if cfg.ShowChildren {
-		result = append(result, "\n| trending | status | parent | issue | assignee | target date | last update |")
-		result = append(result, "|---|---|:--|:--|:--|:--|:--|")
+		result = append(result, "\n| trending | type | status | parent | issue | assignee | target date | last update |")
+		result = append(result, "|---|---|---|---|:--|:--|:--|:--|")
 	} else {
-		result = append(result, "\n| trending | status | issue | assignee | target date | last update |")
-		result = append(result, "|---|---|:--|:--|:--|:--|")
+		result = append(result, "\n| trending | type | status | issue | assignee | target date | last update |")
+		result = append(result, "|---|---|---|---|:--|:--|:--|")
 	}
 
 	// Render rows
@@ -84,16 +84,20 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 		trendingWithEmoji := fmt.Sprintf("%s %s", issue.TrendingEmoji, issue.Trending)
 		targetEnd := FormatDate(issue.TargetEnd)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
+		typeOrStatus := issue.Type
+		if typeOrStatus == "" || strings.ToLower(typeOrStatus) == "unknown" {
+			typeOrStatus = issue.Status
+		}
 
 		// Render row
 		var row string
 		if cfg.ShowChildren {
 			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
-				trendingWithEmoji, issue.Status, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |",
+				trendingWithEmoji, typeOrStatus, issue.Status, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
 		} else {
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s |",
-				trendingWithEmoji, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
+			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
+				trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
 		}
 		result = append(result, row)
 	}
