@@ -106,7 +106,7 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 		apiVersion = "3"
 		logDebug("Using Jira Cloud authentication (API v%s)", apiVersion)
 	} else {
-		logDebug("Using Jira Server/Data Center authentication (API v%s)", apiVersion)
+		logDebug("Using Jira on-prem authentication (API v%s)", apiVersion)
 	}
 
 	client := &JiraClient{
