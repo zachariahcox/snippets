@@ -464,6 +464,7 @@ Examples:
 		os.Exit(1)
 	}
 
+	// log if we're running jql or direct issue keys
 	if *jqlQuery != "" {
 		logInfo("Running JQL query: %s", *jqlQuery)
 	} else {
@@ -471,6 +472,7 @@ Examples:
 	}
 
 	// Parse since date: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days)
+	// This query can be supported directly by JQL.
 	var since *time.Time
 	if *sinceStr != "" {
 		t, err := ParseSince(*sinceStr, time.Now().UTC())
@@ -484,7 +486,8 @@ Examples:
 		}
 	}
 
-	// parse no comment since date
+	// parse "needs update"
+	// This query CANNOT be supported directly by JQL.
 	var noCommentAfter *time.Time
 	if *needsUpdate > 0 {
 		t := time.Now().UTC().AddDate(0, 0, -*needsUpdate)
@@ -550,6 +553,8 @@ Examples:
 		os.Exit(1)
 	}
 
+	// Fetch issues and render report
+	// if there are multiple "parents", render multiple reports.
 	if *individual {
 		for _, issueKey := range issueKeys {
 			parentIssues, childIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)
