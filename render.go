@@ -199,7 +199,7 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 	// minwidth=4 so emoji columns get padding and align; tabwriter counts runes, not display width
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 
-	// columne headers: trending, status, due, type, key, summary
+	// column headers: trending, status, due, type, key, summary
 	format := "%s\t%s\t%s\t%s\t%s\t%s\n"
 	for _, issue := range issues {
 		days, ok := DaysFromNow(issue.TargetEnd)
