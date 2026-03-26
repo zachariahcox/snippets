@@ -210,6 +210,7 @@ func ParseJiraDate(dateStr string) (time.Time, error) {
 
 // DaysFromNow returns the number of days from today for the given date string.
 // Positive = future, negative = past. The second return is false if the date cannot be parsed.
+// "Today" and date-only YYYY-MM-DD values use the UTC calendar day (see also IsDueWithinNextMonth).
 func DaysFromNow(dateStr string) (int, bool) {
 	if dateStr == "" || dateStr == "None" {
 		return 0, false

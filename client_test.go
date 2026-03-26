@@ -180,7 +180,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 
 func TestExtractIssueData_atRisk(t *testing.T) {
 	// Not started + due within next month -> at risk (🟡, trending "at risk")
-	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	// Use UTC to align with DaysFromNow / IsDueWithinNextMonth (UTC calendar "today").
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
 	oldKey := customFields["Target end"]
 	customFields["Target end"] = "targetEnd"
 	defer func() { customFields["Target end"] = oldKey }()
