@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -230,8 +231,83 @@ func serverBaseFromIssueURL(issueURL string) string {
 	return strings.TrimSuffix(u.Scheme+"://"+u.Host, "/")
 }
 
-// RenderURLReport emits a single Jira issues URL with filtered keys as JQL.
-// The server base URL is derived from the first issue's URL in IssueData.
+// jqlIssueKeysClause returns `key in (A, B, C)` for the given issues.
+func jqlIssueKeysClause(issues []*IssueData) string {
+	keys := make([]string, len(issues))
+	for i, issue := range issues {
+		keys[i] = issue.Key
+	}
+	return fmt.Sprintf("key in (%s)", strings.Join(keys, ", "))
+}
+
+// jqlWithUpdatedSince wraps main in (main) AND updated >= "date" when t is non-nil.
+func jqlWithUpdatedSince(main string, t *time.Time) string {
+	main = strings.TrimSpace(main)
+	if t == nil {
+		return main
+	}
+	dateStr := t.Format("2006-01-02")
+	if main == "" {
+		return fmt.Sprintf(`updated >= "%s"`, dateStr)
+	}
+	return fmt.Sprintf("(%s) AND updated >= \"%s\"", main, dateStr)
+}
+
+// jqlOrderByClauseStart matches the start of an ORDER BY clause (any leading whitespace before "order").
+var jqlOrderByClauseStart = regexp.MustCompile(`(?i)\border\s+by\s+`)
+
+// splitJQLOrderBy splits on the last ORDER BY clause (case-insensitive). Whitespace before "order"
+// may be a space, newline, etc.; a literal " order by " substring is not required.
+func splitJQLOrderBy(jql string) (main, orderBySuffix string) {
+	jql = strings.TrimSpace(jql)
+	if jql == "" {
+		return "", ""
+	}
+	idxs := jqlOrderByClauseStart.FindAllStringIndex(jql, -1)
+	if len(idxs) == 0 {
+		return jql, ""
+	}
+	start := idxs[len(idxs)-1][0]
+	main = strings.TrimSpace(jql[:start])
+	orderBySuffix = strings.TrimSpace(jql[start:])
+	if main == "" {
+		return jql, ""
+	}
+	return main, orderBySuffix
+}
+
+var jqlOrderByContainsAssignee = regexp.MustCompile(`(?i)order\s+by\b.*\bassignee\b`)
+
+// mergeURLReportOrderBy ensures the JQL ends with a sensible ORDER BY. If there is no ORDER BY,
+// it appends "order by assignee ASC". If one exists but does not reference assignee, it appends
+// ", assignee ASC" so the user's sort keys stay primary and assignee is a tie-breaker.
+func mergeURLReportOrderBy(jql string) string {
+	const urlReportOrderByAssignee = "assignee ASC"
+
+	jql = strings.TrimSpace(jql)
+	if jql == "" {
+		return jql
+	}
+	main, orderClause := splitJQLOrderBy(jql)
+	if orderClause == "" {
+		// add new order clause
+		return jql + " and order by " + urlReportOrderByAssignee
+	}
+	if jqlOrderByContainsAssignee.MatchString(orderClause) {
+		// assignee already in order clause, do not modify
+		return jql
+	}
+	// add additional order clause
+	return main + " " + orderClause + ", " + urlReportOrderByAssignee
+}
+
+// RenderURLReport emits a single Jira issues URL with a jql= query parameter.
+// Key-only runs use key in (...); --since is omitted unless --needs-update is also in effect
+// (then (key in (...)) AND updated >= "date" from --since only). User JQL is reused with --since
+// merged via jqlWithUpdatedSince. ORDER BY is handled by mergeURLReportOrderBy.
+//
+// NoCommentAfter (--needs-update) is about last-comment age, not issue updated; it cannot be encoded
+// as updated >= ... in JQL, so when set the URL uses key in (...) for the filtered result set.
 func RenderURLReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 	if len(issues) == 0 {
@@ -241,11 +317,23 @@ func RenderURLReport(issues []*IssueData, cfg *ReportConfig) string {
 	if base == "" {
 		return ""
 	}
-	keys := make([]string, len(issues))
-	for i, issue := range issues {
-		keys[i] = issue.Key
+
+	var jql string
+	switch {
+	case cfg.NoCommentAfter != nil:
+		jql = mergeURLReportOrderBy(jqlWithUpdatedSince(jqlIssueKeysClause(issues), cfg.UpdatedAfter))
+	case strings.TrimSpace(cfg.JQLQuery) != "":
+		main, orderSuffix := splitJQLOrderBy(strings.TrimSpace(cfg.JQLQuery))
+		if main == "" {
+			main = strings.TrimSpace(cfg.JQLQuery)
+			orderSuffix = ""
+		}
+		main = jqlWithUpdatedSince(main, cfg.UpdatedAfter)
+		jql = mergeURLReportOrderBy(strings.TrimSpace(main + " " + orderSuffix))
+	default:
+		jql = mergeURLReportOrderBy(jqlIssueKeysClause(issues))
 	}
-	jql := fmt.Sprintf("key in (%s) order by assignee ASC", strings.Join(keys, ", "))
+
 	params := url.Values{"jql": {jql}}
 	return base + "/issues/?" + params.Encode()
 }

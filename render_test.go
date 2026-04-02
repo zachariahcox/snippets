@@ -74,8 +74,9 @@ func TestIsStale(t *testing.T) {
 }
 
 func TestIsDueWithinNextMonth(t *testing.T) {
-	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
-	twoMonths := time.Now().AddDate(0, 2, 0).Format("2006-01-02")
+	// DaysFromNow uses UTC calendar dates for "today"; match that so local TZ does not flip tomorrow to 0 days.
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+	twoMonths := time.Now().UTC().AddDate(0, 2, 0).Format("2006-01-02")
 
 	if IsDueWithinNextMonth("") {
 		t.Error("IsDueWithinNextMonth(\"\") want false")
@@ -414,6 +415,49 @@ func TestRenderSlackReport(t *testing.T) {
 	}
 }
 
+func TestSplitJQLOrderBy_lastOrderByWins(t *testing.T) {
+	main, ob := splitJQLOrderBy("project = X order by rank ASC order by key DESC")
+	if main != "project = X order by rank ASC" {
+		t.Errorf("main = %q", main)
+	}
+	if ob != "order by key DESC" {
+		t.Errorf("orderBySuffix = %q", ob)
+	}
+}
+
+func TestSplitJQLOrderBy_newlineBeforeOrderBy(t *testing.T) {
+	jql := "project = SCM\nand status = open\norder by \"Target end\" ASC"
+	main, ob := splitJQLOrderBy(jql)
+	if main == "" || ob == "" {
+		t.Fatalf("split failed: main=%q ob=%q", main, ob)
+	}
+	if !strings.HasPrefix(strings.ToLower(ob), "order by ") {
+		t.Errorf("order suffix: %q", ob)
+	}
+	merged := mergeURLReportOrderBy(jql)
+	if strings.Count(strings.ToLower(merged), "order by") != 1 {
+		t.Errorf("want exactly one ORDER BY, got: %q", merged)
+	}
+	if !strings.Contains(merged, ", assignee ASC") {
+		t.Errorf("want assignee merged with comma, got: %q", merged)
+	}
+}
+
+func TestMergeURLReportOrderBy(t *testing.T) {
+	if got := mergeURLReportOrderBy(""); got != "" {
+		t.Errorf("empty: %q", got)
+	}
+	if got := mergeURLReportOrderBy("project = FOO"); got != "project = FOO and order by assignee ASC" {
+		t.Errorf("no order: %q", got)
+	}
+	if got := mergeURLReportOrderBy("project = FOO AND ORDER BY updated DESC"); got != "project = FOO AND ORDER BY updated DESC, assignee ASC" {
+		t.Errorf("merge: %q", got)
+	}
+	if got := mergeURLReportOrderBy("project = FOO and order by assignee DESC"); got != "project = FOO and order by assignee DESC" {
+		t.Errorf("assignee already present: %q", got)
+	}
+}
+
 func TestRenderURLReport(t *testing.T) {
 	issues := []*IssueData{
 		{Key: "SCM-1079", URL: "https://jirasw.nvidia.com/browse/SCM-1079"},
@@ -435,6 +479,118 @@ func TestRenderURLReport(t *testing.T) {
 	}
 	if !strings.Contains(out, "order+by+assignee+ASC") {
 		t.Error("expected order by assignee in JQL")
+	}
+}
+
+func TestRenderURLReport_jqlMergesAssigneeAfterExistingOrderBy(t *testing.T) {
+	issues := []*IssueData{{Key: "X-1", URL: "https://jira.example.com/browse/X-1"}}
+	cfg := &ReportConfig{JQLQuery: "project = BAR order by updated DESC"}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "order+by+updated+DESC") && !strings.Contains(out, "order+by+updated+desc") {
+		t.Errorf("expected user's order by in URL: %s", out)
+	}
+	if !strings.Contains(out, "assignee+ASC") {
+		t.Errorf("expected merged assignee tie-break in URL: %s", out)
+	}
+}
+
+func TestRenderURLReport_jqlExistingOrderByAssigneeNotDuplicated(t *testing.T) {
+	issues := []*IssueData{{Key: "X-1", URL: "https://jira.example.com/browse/X-1"}}
+	cfg := &ReportConfig{JQLQuery: "project = BAR order by assignee DESC"}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "assignee+DESC") {
+		t.Errorf("expected assignee DESC from user JQL: %s", out)
+	}
+	// Must not append ", assignee ASC" when assignee is already in ORDER BY.
+	if strings.Contains(out, "assignee+DESC%2C+assignee") || strings.Contains(out, "assignee+DESC,+assignee") {
+		t.Errorf("should not append a second assignee sort: %s", out)
+	}
+}
+
+func TestRenderURLReport_reusesJQL(t *testing.T) {
+	issues := []*IssueData{{Key: "SCM-1079", URL: "https://jirasw.nvidia.com/browse/SCM-1079"}}
+	cfg := &ReportConfig{JQLQuery: "project = FOO AND status = Open"}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "project+%3D+FOO") && !strings.Contains(out, "project=FOO") {
+		t.Errorf("expected original JQL in URL: %s", out)
+	}
+	if strings.Contains(out, "key+in+") || strings.Contains(out, "key%20in%20") {
+		t.Errorf("did not expect key in clause when JQL is set: %s", out)
+	}
+}
+
+func TestRenderURLReport_jqlWithSince(t *testing.T) {
+	jan15 := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	issues := []*IssueData{
+		{Key: "X-1", URL: "https://jira.example.com/browse/X-1", Updated: "2025-01-20T12:00:00.000Z"},
+	}
+	cfg := &ReportConfig{
+		JQLQuery:     "project = BAR",
+		UpdatedAfter: &jan15,
+	}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "updated+%3E%3D+%222025-01-15%22") && !strings.Contains(out, `updated>=%222025-01-15%22`) {
+		t.Errorf("expected updated >= date in JQL: %s", out)
+	}
+}
+
+func TestRenderURLReport_keyListNoNeedsUpdateOmitsSinceInJQL(t *testing.T) {
+	jan15 := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	issues := []*IssueData{
+		{Key: "X-1", URL: "https://jira.example.com/browse/X-1", Updated: "2025-01-20T12:00:00.000Z"},
+	}
+	cfg := &ReportConfig{UpdatedAfter: &jan15}
+	out := RenderURLReport(issues, cfg)
+	if strings.Contains(strings.ToLower(out), "updated") {
+		t.Errorf("key-only without needs-update should not add updated clause: %s", out)
+	}
+	if !strings.Contains(out, "X-1") {
+		t.Errorf("expected key in URL: %s", out)
+	}
+}
+
+func TestRenderURLReport_keyListNeedsUpdateAndSince(t *testing.T) {
+	jan15 := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	noComment := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+	issues := []*IssueData{
+		{Key: "X-1", URL: "https://jira.example.com/browse/X-1", Updated: "2025-01-20T12:00:00.000Z", Comment: IssueComment{Created: "2025-01-01"}},
+		{Key: "X-2", URL: "https://jira.example.com/browse/X-2", Updated: "2025-01-18T12:00:00.000Z", Comment: IssueComment{Created: "2025-01-02"}},
+	}
+	cfg := &ReportConfig{
+		UpdatedAfter:   &jan15,
+		NoCommentAfter: &noComment,
+	}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "key+in+") && !strings.Contains(out, "key%20in%20") {
+		t.Errorf("expected key in (...) for needs-update: %s", out)
+	}
+	if !strings.Contains(out, "X-1") || !strings.Contains(out, "X-2") {
+		t.Errorf("expected both keys in URL: %s", out)
+	}
+	if !strings.Contains(out, "updated+%3E%3D+%222025-01-15%22") && !strings.Contains(out, `updated>=%222025-01-15%22`) {
+		t.Errorf("expected since as updated >= in JQL: %s", out)
+	}
+}
+
+func TestRenderURLReport_needsUpdateUsesKeyIn(t *testing.T) {
+	noComment := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+	issues := []*IssueData{
+		{Key: "K-1", URL: "https://jira.example.com/browse/K-1", Comment: IssueComment{Created: "2025-01-01"}},
+		{Key: "K-2", URL: "https://jira.example.com/browse/K-2", Comment: IssueComment{Created: "2025-01-01"}},
+	}
+	cfg := &ReportConfig{
+		JQLQuery:       "project = ZZZ",
+		NoCommentAfter: &noComment,
+	}
+	out := RenderURLReport(issues, cfg)
+	if !strings.Contains(out, "key+in+") && !strings.Contains(out, "key%20in%20") {
+		t.Errorf("expected key in (...) not project JQL: %s", out)
+	}
+	if !strings.Contains(out, "K-1") || !strings.Contains(out, "K-2") {
+		t.Errorf("expected keys in URL: %s", out)
+	}
+	if strings.Contains(out, "ZZZ") {
+		t.Errorf("needs-update mode should not reuse JQL: %s", out)
 	}
 }
 
