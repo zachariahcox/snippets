@@ -164,6 +164,25 @@ func TestRenderMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownReport_titleEscaped(t *testing.T) {
+	summary := `Fix [P-1] (urgent) | see #2`
+	jiraURL := "https://jira.example.com/browse/A-1"
+	issues := []*IssueData{{Key: "A-1", URL: jiraURL, Summary: summary, Status: "open", Type: "story"}}
+	cfg := &ReportConfig{Title: `Report | Q1 [draft] #1`}
+	out := RenderMarkdownReport(issues, cfg)
+	if !strings.Contains(out, "### Report \\| Q1 \\[draft\\] \\#1 @") {
+		snippet := out
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		t.Errorf("title should escape markdown punctuation: %s", snippet)
+	}
+	wantLink := "[Fix \\[P-1\\] \\(urgent\\) \\| see \\#2](" + jiraURL + ")"
+	if !strings.Contains(out, wantLink) {
+		t.Errorf("issue summary in link text should be escaped; want substring:\n%s\n\noutput:\n%s", wantLink, out)
+	}
+}
+
 func TestRenderMarkdownReport_children(t *testing.T) {
 	issues := []*IssueData{
 		{

@@ -59,13 +59,31 @@ func RenderReport(parentIssues []*IssueData, childIssues []*IssueData, cfg *Repo
 	}
 }
 
+// escapeMarkdownInline backslash-escapes punctuation so titles and issue summaries render
+// literally in ATX headings and [label](url) link labels without breaking markdown.
+func escapeMarkdownInline(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		switch r {
+		case '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '!', '|':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // RenderMarkdownReport renders issues as a markdown report
 func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	logInfo("Rendering markdown report for %d issues", len(issues))
 	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
-	result = append(result, fmt.Sprintf("\n### %s @ %s", cfg.Title, time.Now().Format(time.RFC3339)))
+	result = append(result, fmt.Sprintf("\n### %s @ %s", escapeMarkdownInline(cfg.Title), time.Now().Format(time.RFC3339)))
 
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
@@ -81,7 +99,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	// Render rows
 	for _, issue := range issues {
 		// Format cells
-		issueLink := fmt.Sprintf("[%s](%s)", issue.Summary, issue.URL)
+		issueLink := fmt.Sprintf("[%s](%s)", escapeMarkdownInline(issue.Summary), issue.URL)
 		trendingWithEmoji := fmt.Sprintf("%s %s", issue.TrendingEmoji, issue.Trending)
 		targetEnd := FormatDate(issue.TargetEnd)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
