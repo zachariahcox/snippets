@@ -138,6 +138,7 @@ type ReportConfig struct {
 	SlackOutput    bool
 	URLOutput      bool
 	SimpleOutput   bool
+	SummaryOutput  bool
 	JQLQuery       string
 }
 
@@ -153,9 +154,9 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q children=%t since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t",
+	return fmt.Sprintf("title=%q jql=%q children=%t since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t",
 		c.Title, c.JQLQuery, c.ShowChildren, since, noComment, c.OutputFile,
-		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput, c.SimpleOutput)
+		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput, c.SimpleOutput, c.SummaryOutput)
 }
 
 // ParseSince parses --since: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days).
@@ -381,6 +382,7 @@ func main() {
 	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
 	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
+	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 
@@ -522,6 +524,7 @@ Examples:
 		SlackOutput:    *slackOutput,
 		URLOutput:      *urlOutput,
 		SimpleOutput:   *simpleOutput,
+		SummaryOutput:  *summaryOutput,
 		JQLQuery:       *jqlQuery,
 	}
 

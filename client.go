@@ -30,14 +30,6 @@ var trendingEmojis = map[string]string{
 	"not started": "⚪",
 }
 
-var trendingOrder = []string{
-	"done",
-	"on track",
-	"at risk",
-	"off track",
-	"not started",
-}
-
 // statusEmojis maps status to action/semantic icons (play, check, stop, etc.)
 var statusEmojis = map[string]string{
 	"closed":         "❎",

@@ -164,6 +164,48 @@ func TestRenderMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownStatusSummary(t *testing.T) {
+	issues := []*IssueData{
+		{Key: "A-1", Status: "in progress"},
+		{Key: "A-2", Status: "in progress"},
+		{Key: "A-3", Status: "done"},
+		{Key: "A-4", Status: "done"},
+		{Key: "A-5", Status: "done"},
+	}
+	cfg := &ReportConfig{Title: "Sprint"}
+	out := RenderMarkdownStatusSummary(issues, cfg)
+	if !strings.Contains(out, "* total issues: 5*") {
+		t.Errorf("want total 5: %s", out)
+	}
+	if !strings.Contains(out, "| done | 3 | 60.0% |") {
+		t.Errorf("want done row: %s", out)
+	}
+	if !strings.Contains(out, "| in progress | 2 | 40.0% |") {
+		t.Errorf("want in progress row: %s", out)
+	}
+	// Higher count first: done before in progress
+	doneIdx := strings.Index(out, "| done |")
+	ipIdx := strings.Index(out, "| in progress |")
+	if doneIdx <= 0 || ipIdx <= 0 || doneIdx >= ipIdx {
+		t.Errorf("want descending count order (done then in progress): %s", out)
+	}
+}
+
+func TestRenderMarkdownStatusSummary_empty(t *testing.T) {
+	out := RenderMarkdownStatusSummary(nil, &ReportConfig{Title: "Empty"})
+	if !strings.Contains(out, "* total issues: 0*") || !strings.Contains(out, "No issues") {
+		t.Errorf("empty set: %s", out)
+	}
+}
+
+func TestRenderMarkdownStatusSummary_escapesStatus(t *testing.T) {
+	issues := []*IssueData{{Key: "X-1", Status: `Open | review`}}
+	out := RenderMarkdownStatusSummary(issues, &ReportConfig{Title: "T"})
+	if !strings.Contains(out, `Open \| review`) {
+		t.Errorf("status cell should escape pipe: %s", out)
+	}
+}
+
 func TestRenderMarkdownReport_titleEscaped(t *testing.T) {
 	summary := `Fix [P-1] (urgent) | see #2`
 	jiraURL := "https://jira.example.com/browse/A-1"

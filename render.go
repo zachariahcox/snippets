@@ -35,6 +35,8 @@ func RenderReport(parentIssues []*IssueData, childIssues []*IssueData, cfg *Repo
 		outputData = RenderURLReport(issuesToRender, cfg)
 	} else if cfg.SimpleOutput {
 		outputData = RenderSimpleReport(issuesToRender, cfg)
+	} else if cfg.SummaryOutput {
+		outputData = RenderMarkdownStatusSummary(issuesToRender, cfg)
 	} else {
 		outputData = RenderMarkdownReport(issuesToRender, cfg)
 	}
@@ -123,6 +125,60 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	result = append(result, "\n")
 	return strings.Join(result, "\n")
+}
+
+// RenderMarkdownStatusSummary renders a markdown table of counts and percents by issue Status
+// for the filtered list (same filters as other reports).
+func RenderMarkdownStatusSummary(issues []*IssueData, cfg *ReportConfig) string {
+	issues = filterAndSortIssues(issues, cfg)
+	title := ""
+	if cfg != nil {
+		title = escapeMarkdownInline(cfg.Title)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n### %s — status summary @ %s\n\n", title, time.Now().Format(time.RFC3339))
+	n := len(issues)
+	fmt.Fprintf(&b, "* total issues: %d*\n\n", n)
+	if n == 0 {
+		b.WriteString("*No issues in the filtered set.*\n\n")
+		return b.String()
+	}
+
+	counts := make(map[string]int)
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		st := strings.TrimSpace(issue.Status)
+		if st == "" {
+			st = "unknown"
+		}
+		counts[st]++
+	}
+
+	type statusCount struct {
+		status string
+		count  int
+	}
+	rows := make([]statusCount, 0, len(counts))
+	for s, c := range counts {
+		rows = append(rows, statusCount{s, c})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].status < rows[j].status
+	})
+
+	b.WriteString("| status | count | percent |\n")
+	b.WriteString("|---:|---:|---:|\n")
+	for _, r := range rows {
+		pct := 100.0 * float64(r.count) / float64(n)
+		fmt.Fprintf(&b, "| %s | %d | %.1f%% |\n", escapeMarkdownInline(r.status), r.count, pct)
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func RenderJSONReport(issues []*IssueData, cfg *ReportConfig) string {
