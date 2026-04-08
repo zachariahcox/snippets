@@ -8,19 +8,19 @@ import (
 )
 
 func TestCacheKey_deterministic(t *testing.T) {
-	k1 := CacheKey("project = X", nil, true)
-	k2 := CacheKey("project = X", nil, true)
+	k1 := CacheKey("project = X", nil)
+	k2 := CacheKey("project = X", nil)
 	if k1 != k2 {
 		t.Errorf("same inputs gave different keys: %q vs %q", k1, k2)
 	}
 	// Key order should not matter
-	k3 := CacheKey("", []string{"A-1", "B-2"}, false)
-	k4 := CacheKey("", []string{"B-2", "A-1"}, false)
+	k3 := CacheKey("", []string{"A-1", "B-2"})
+	k4 := CacheKey("", []string{"B-2", "A-1"})
 	if k3 != k4 {
 		t.Errorf("same keys different order should match: %q vs %q", k3, k4)
 	}
 	// Different query -> different key
-	if CacheKey("jql1", nil, false) == CacheKey("jql2", nil, false) {
+	if CacheKey("jql1", nil) == CacheKey("jql2", nil) {
 		t.Error("different JQL should give different keys")
 	}
 }
@@ -30,24 +30,26 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 	path := filepath.Join(dir, "test.json")
 
 	parent := []*IssueData{
-		{Key: "P-1", Summary: "One", Status: "done", TrendingEmoji: "🟣"},
-	}
-	child := []*IssueData{
-		{Key: "C-1", Summary: "Sub", Status: "in progress", ParentKey: "P-1"},
+		{
+			Key: "P-1", Summary: "One", Status: "done", TrendingEmoji: "🟣",
+			Children: []*IssueData{
+				{Key: "C-1", Summary: "Sub", Status: "in progress", ParentKey: "P-1"},
+			},
+		},
 	}
 
-	if err := WriteCache(path, parent, child); err != nil {
+	if err := WriteCache(path, parent); err != nil {
 		t.Fatalf("WriteCache: %v", err)
 	}
-	p2, c2, err := ReadCache(path)
+	p2, err := ReadCache(path)
 	if err != nil {
 		t.Fatalf("ReadCache: %v", err)
 	}
 	if len(p2) != 1 || p2[0].Key != "P-1" || p2[0].Summary != "One" {
 		t.Errorf("parent mismatch: got %+v", p2)
 	}
-	if len(c2) != 1 || c2[0].Key != "C-1" || c2[0].ParentKey != "P-1" {
-		t.Errorf("child mismatch: got %+v", c2)
+	if len(p2[0].Children) != 1 || p2[0].Children[0].Key != "C-1" || p2[0].Children[0].ParentKey != "P-1" {
+		t.Errorf("nested children mismatch: got %+v", p2[0].Children)
 	}
 }
 
@@ -77,14 +79,13 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 	}
 
 	cfg := &ReportConfig{
-		Title:        "Test",
-		ShowChildren: false,
-		JQLQuery:     "",
+		Title:    "Test",
+		JQLQuery: "",
 	}
 	issueKeys := []string{"P-1"}
 
 	// Prime the cache with the same key FetchReportIssues would use
-	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.ShowChildren)
+	key := CacheKey(cfg.JQLQuery, issueKeys)
 	path, err := cachePath(key)
 	if err != nil {
 		t.Fatalf("cachePath: %v", err)
@@ -92,19 +93,16 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 	parent := []*IssueData{
 		{Key: "P-1", Summary: "Cached issue", Status: "done", TrendingEmoji: "🟣"},
 	}
-	if err := WriteCache(path, parent, nil); err != nil {
+	if err := WriteCache(path, parent); err != nil {
 		t.Fatalf("WriteCache: %v", err)
 	}
 
 	// FetchReportIssues with nil client should hit the cache
-	gotParent, gotChild, err := FetchReportIssues(nil, issueKeys, cfg)
+	gotParent, err := FetchReportIssues(nil, issueKeys, cfg)
 	if err != nil {
 		t.Fatalf("FetchReportIssues (cache hit): %v", err)
 	}
 	if len(gotParent) != 1 || gotParent[0].Key != "P-1" || gotParent[0].Summary != "Cached issue" {
 		t.Errorf("cache hit: got parent %+v", gotParent)
-	}
-	if len(gotChild) != 0 {
-		t.Errorf("cache hit: got child %+v", gotChild)
 	}
 }

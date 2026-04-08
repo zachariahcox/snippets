@@ -21,7 +21,6 @@ const cacheTTL = 30 * time.Minute
 // cacheEntry is the on-disk format for cached issue data.
 type cacheEntry struct {
 	ParentIssues []*IssueData `json:"parent_issues"`
-	ChildIssues  []*IssueData `json:"child_issues"`
 }
 
 // cacheDirFn is used by CacheDir; tests can override to use a temp dir.
@@ -38,8 +37,8 @@ func CacheDir() (string, error) {
 	return cacheDirFn()
 }
 
-// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted keys + showChildren).
-func CacheKey(jql string, keys []string, showChildren bool) string {
+// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted issue keys).
+func CacheKey(jql string, keys []string) string {
 	var parts []string
 	if jql != "" {
 		parts = []string{"jql:", jql}
@@ -48,11 +47,6 @@ func CacheKey(jql string, keys []string, showChildren bool) string {
 		copy(k, keys)
 		sort.Strings(k)
 		parts = []string{"keys:", strings.Join(k, ",")}
-	}
-	if showChildren {
-		parts = append(parts, "|children:1")
-	} else {
-		parts = append(parts, "|children:0")
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "")))
 	return hex.EncodeToString(h[:])
@@ -144,28 +138,25 @@ func CacheValid(path string, maxAge time.Duration) bool {
 	return time.Since(info.ModTime()) <= maxAge
 }
 
-// ReadCache reads a cache file and returns parent and child issues.
-func ReadCache(path string) (parentIssues, childIssues []*IssueData, err error) {
+// ReadCache reads a cache file and returns parent issues (including nested Children when present).
+func ReadCache(path string) (parentIssues []*IssueData, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var ent cacheEntry
 	if err := json.Unmarshal(data, &ent); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return ent.ParentIssues, ent.ChildIssues, nil
+	return ent.ParentIssues, nil
 }
 
-// WriteCache writes parent and child issues to a cache file.
-func WriteCache(path string, parentIssues, childIssues []*IssueData) error {
+// WriteCache writes parent issues to a cache file.
+func WriteCache(path string, parentIssues []*IssueData) error {
 	if parentIssues == nil {
 		parentIssues = []*IssueData{}
 	}
-	if childIssues == nil {
-		childIssues = []*IssueData{}
-	}
-	ent := cacheEntry{ParentIssues: parentIssues, ChildIssues: childIssues}
+	ent := cacheEntry{ParentIssues: parentIssues}
 	data, err := json.MarshalIndent(ent, "", "  ")
 	if err != nil {
 		return err

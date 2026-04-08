@@ -17,7 +17,7 @@ func TestExtractIssueData(t *testing.T) {
 			"updated":  "2025-01-02T12:00:00.000Z",
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com", "", "")
 	if data.Key != "PROJ-1" {
 		t.Errorf("Key = %q, want PROJ-1", data.Key)
 	}
@@ -48,7 +48,7 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 			"summary": "Minimal",
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "PARENT-1", "Parent summary")
+	data := extractIssueData(issue, "https://jira.example.com", "PARENT-1", "Parent summary")
 	if data.Key != "PROJ-2" {
 		t.Errorf("Key = %q, want PROJ-2", data.Key)
 	}
@@ -95,7 +95,7 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		issue := copyMap(base)
 		fields := issue["fields"].(map[string]any)
 		fields["status"] = map[string]any{"name": tt.statusName}
-		data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+		data := extractIssueData(issue, "https://jira.example.com", "", "")
 		if data.Trending != tt.wantTrending {
 			t.Errorf("status %q: Trending = %q, want %q", tt.statusName, data.Trending, tt.wantTrending)
 		}
@@ -113,7 +113,7 @@ func TestExtractIssueData_parentURL(t *testing.T) {
 			"status":  map[string]any{"name": "In Progress"},
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "PROJ-123", "Parent epic")
+	data := extractIssueData(issue, "https://jira.example.com", "PROJ-123", "Parent epic")
 	if data.URL != "https://jira.example.com/browse/PROJ-123-1" {
 		t.Errorf("URL = %q", data.URL)
 	}
@@ -135,7 +135,7 @@ func TestExtractIssueData_createdUpdated(t *testing.T) {
 			"updated": "2024-07-20T14:30:00.000-0700",
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com", "", "")
 	if data.Created != "2024-06-15T09:00:00.000Z" {
 		t.Errorf("Created = %q", data.Created)
 	}
@@ -157,7 +157,7 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	}
 	// Target end comes from custom field; customFields["Target end"] may be unset.
 	// If set in code, we'd need to inject. So test without target end first.
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com", "", "")
 	if data.TrendingEmoji != "🟢" {
 		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
@@ -172,7 +172,7 @@ func TestExtractIssueData_overdue(t *testing.T) {
 			"updated": "2025-01-02T00:00:00Z",
 		},
 	}
-	dataDone := ExtractIssueData(doneIssue, "https://jira.example.com", "", "")
+	dataDone := extractIssueData(doneIssue, "https://jira.example.com", "", "")
 	if dataDone.Trending != "done" || dataDone.TrendingEmoji != "🟣" {
 		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.TrendingEmoji)
 	}
@@ -180,7 +180,7 @@ func TestExtractIssueData_overdue(t *testing.T) {
 
 func TestExtractIssueData_atRisk(t *testing.T) {
 	// Not started + due within next month -> at risk (🟡, trending "at risk")
-	// Use UTC to align with DaysFromNow / IsDueWithinNextMonth (UTC calendar "today").
+	// Use UTC to align with DaysFromNow / isDueWithinNextMonth (UTC calendar "today").
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
 	oldKey := customFields["Target end"]
 	customFields["Target end"] = "targetEnd"
@@ -196,7 +196,7 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 			"targetEnd": tomorrow,
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com", "", "")
 	if data.Trending != "at risk" {
 		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
 	}
@@ -213,7 +213,7 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 			"status":  map[string]any{"name": "  IN PROGRESS  "},
 		},
 	}
-	data := ExtractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com", "", "")
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)
 	}

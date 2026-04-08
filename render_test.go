@@ -56,20 +56,20 @@ func TestFormatDate(t *testing.T) {
 }
 
 func TestIsStale(t *testing.T) {
-	if !IsStale("2000-01-01") {
-		t.Error("IsStale(2000-01-01) should be true")
+	if !isStale("2000-01-01") {
+		t.Error("isStale(2000-01-01) should be true")
 	}
-	if !IsStale("2000-01-01") {
-		t.Error("IsStale(2000-01-01) should be true")
+	if !isStale("2000-01-01") {
+		t.Error("isStale(2000-01-01) should be true")
 	}
-	if IsStale("") {
-		t.Error("IsStale(\"\") should be false")
+	if isStale("") {
+		t.Error("isStale(\"\") should be false")
 	}
-	if IsStale("None") {
-		t.Error("IsStale(None) should be false")
+	if isStale("None") {
+		t.Error("isStale(None) should be false")
 	}
-	if !IsStale("2000-01-01") {
-		t.Error("IsStale(2000-01-01) should be true")
+	if !isStale("2000-01-01") {
+		t.Error("isStale(2000-01-01) should be true")
 	}
 }
 
@@ -78,17 +78,17 @@ func TestIsDueWithinNextMonth(t *testing.T) {
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
 	twoMonths := time.Now().UTC().AddDate(0, 2, 0).Format("2006-01-02")
 
-	if IsDueWithinNextMonth("") {
-		t.Error("IsDueWithinNextMonth(\"\") want false")
+	if isDueWithinNextMonth("") {
+		t.Error("isDueWithinNextMonth(\"\") want false")
 	}
-	if IsDueWithinNextMonth("None") {
-		t.Error("IsDueWithinNextMonth(None) want false")
+	if isDueWithinNextMonth("None") {
+		t.Error("isDueWithinNextMonth(None) want false")
 	}
-	if !IsDueWithinNextMonth(tomorrow) {
-		t.Error("IsDueWithinNextMonth(tomorrow) want true")
+	if !isDueWithinNextMonth(tomorrow) {
+		t.Error("isDueWithinNextMonth(tomorrow) want true")
 	}
-	if IsDueWithinNextMonth(twoMonths) {
-		t.Error("IsDueWithinNextMonth(2 months) want false")
+	if isDueWithinNextMonth(twoMonths) {
+		t.Error("isDueWithinNextMonth(2 months) want false")
 	}
 }
 
@@ -225,7 +225,7 @@ func TestRenderMarkdownReport_titleEscaped(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownReport_children(t *testing.T) {
+func TestRenderMarkdownReport_subtaskRow(t *testing.T) {
 	issues := []*IssueData{
 		{
 			Key:           "PROJ-123-1",
@@ -243,7 +243,7 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 			Trending:      "in progress",
 		},
 	}
-	cfg := &ReportConfig{ShowChildren: true, Title: "Children Report"}
+	cfg := &ReportConfig{Title: "Children Report"}
 	out := RenderMarkdownReport(issues, cfg)
 	if out == "" {
 		t.Error("RenderMarkdownReport returned empty string")
@@ -251,14 +251,8 @@ func TestRenderMarkdownReport_children(t *testing.T) {
 	if !strings.Contains(out, "| type |") {
 		t.Error("expected type column in markdown header")
 	}
-	if !strings.Contains(out, "| parent |") {
-		t.Error("expected parent column header when ShowChildren=true")
-	}
 	if !strings.Contains(out, "Subtask one") {
-		t.Error("output missing child summary")
-	}
-	if !strings.Contains(out, "PROJ-123") {
-		t.Error("output missing parent key")
+		t.Error("output missing issue summary")
 	}
 	if !strings.Contains(out, "subtask") {
 		t.Error("expected issue type (subtask) in markdown output")
@@ -407,7 +401,7 @@ func TestRenderCSVReport(t *testing.T) {
 	}
 }
 
-func TestRenderCSVReport_children(t *testing.T) {
+func TestRenderCSVReport_parentFields(t *testing.T) {
 	issues := []*IssueData{
 		{
 			Key:           "PROJ-123-1",
@@ -418,10 +412,10 @@ func TestRenderCSVReport_children(t *testing.T) {
 			Trending:      "in progress",
 		},
 	}
-	cfg := &ReportConfig{ShowChildren: true}
+	cfg := &ReportConfig{}
 	out := RenderCSVReport(issues, cfg)
-	if !strings.Contains(out, "parent") {
-		t.Error("expected parent column when ShowChildren=true")
+	if !strings.Contains(out, "parent_key") {
+		t.Error("expected parent_key column in CSV header")
 	}
 	if !strings.Contains(out, "PROJ-123") {
 		t.Error("expected parent key in output")

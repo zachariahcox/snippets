@@ -79,7 +79,8 @@ type IssueData struct {
 	Trending      string
 	TrendingEmoji string `json:"Emoji"` // keep "Emoji" for cache compat
 	Comment       IssueComment
-	Type          string // one of "initiative","epic", "story","subtask"
+	Type          string       // one of "initiative","epic", "story","subtask"
+	Children      []*IssueData // all the children issues
 }
 
 // NewJiraClient creates a new Jira client
@@ -118,8 +119,8 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 	return client, nil
 }
 
-// ExtractIssueData extracts relevant data from a Jira issue API response
-func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
+// extractIssueData extracts relevant data from a Jira issue API response
+func extractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
 	fields := getMap(issue, "fields")
 	issueKey := getString(issue, "key", "")
 
@@ -178,7 +179,7 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	case "in progress":
 		trending = "on track"
 	case "not started", "new", "vetting", "ready for work":
-		if IsDueWithinNextMonth(targetEnd) {
+		if isDueWithinNextMonth(targetEnd) {
 			trending = "at risk"
 		} else {
 			trending = "not started"
@@ -189,7 +190,7 @@ func ExtractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 		trending = statusNormalized
 	}
 	// anything overdue is off track
-	if trending != "done" && IsStale(targetEnd) {
+	if trending != "done" && isStale(targetEnd) {
 		trending = "off track"
 	}
 	trendingEmoji := "❓"
@@ -225,7 +226,7 @@ func (client *JiraClient) GetIssue(issueKey, parentKey, parentSummary string) (*
 		logError("  - Failed to fetch issue %s: %v", issueKey, err)
 		return nil, err
 	}
-	data := ExtractIssueData(issue, client.Server, parentKey, parentSummary)
+	data := extractIssueData(issue, client.Server, parentKey, parentSummary)
 	logInfo("  - Fetched one issue: %s", issueKey)
 	return data, nil
 }
@@ -242,7 +243,7 @@ func (client *JiraClient) GetIssuesFromQuery(jqlQuery string) ([]*IssueData, err
 	}
 
 	for _, issueJsonBlob := range jsonBlobs {
-		issueData := ExtractIssueData(issueJsonBlob, client.Server, "", "")
+		issueData := extractIssueData(issueJsonBlob, client.Server, "", "")
 		issues = append(issues, issueData)
 	}
 
@@ -250,70 +251,32 @@ func (client *JiraClient) GetIssuesFromQuery(jqlQuery string) ([]*IssueData, err
 	return issues, nil
 }
 
-// GetSubtasks fetches subtasks for a parent issue
-func (client *JiraClient) GetSubtasks(parentKey, parentSummary string) []*IssueData {
-	var subtasks []*IssueData
-
-	parentIssue, err := client.getIssue(parentKey)
-	if err != nil {
-		logError("Failed to get subtasks for %s: %v", parentKey, err)
-		return subtasks
-	}
-
-	fields := getMap(parentIssue, "fields")
-	if parentSummary == "" {
-		parentSummary = getString(fields, "summary", "")
-	}
-
-	subtaskRefs := getMapList(fields, "subtasks")
-	for _, ref := range subtaskRefs {
-		subtaskKey := getString(ref, "key", "")
-		if subtaskKey != "" {
-			data, err := client.GetIssue(subtaskKey, parentKey, parentSummary)
-			if err == nil && data != nil {
-				subtasks = append(subtasks, data)
+func (client *JiraClient) loadChildren(parents []*IssueData) {
+	for _, parent := range parents {
+		if parent == nil {
+			continue
+		}
+		pSummary := parent.Summary
+		if pSummary == "" {
+			if issue, err := client.getIssue(parent.Key); err == nil {
+				pSummary = getString(getMap(issue, "fields"), "summary", "")
 			}
 		}
-	}
-
-	logInfo("  Found %d subtasks for %s", len(subtasks), parentKey)
-	return subtasks
-}
-
-// GetLinkedIssues fetches linked issues for a parent issue
-func (client *JiraClient) GetLinkedIssues(parentKey, parentSummary string) []*IssueData {
-	var linked []*IssueData
-
-	parentIssue, err := client.getIssue(parentKey)
-	if err != nil {
-		logError("Failed to get linked issues for %s: %v", parentKey, err)
-		return linked
-	}
-
-	fields := getMap(parentIssue, "fields")
-	if parentSummary == "" {
-		parentSummary = getString(fields, "summary", "")
-	}
-
-	issueLinks := getMapList(fields, "issuelinks")
-	for _, link := range issueLinks {
-		linkedIssue := getMap(link, "outwardIssue")
-		if linkedIssue == nil {
-			linkedIssue = getMap(link, "inwardIssue")
+		jql := fmt.Sprintf(`issue in linkedIssues(%s, "is parent of") or issue in childIssuesOf(%s)`, parent.Key, parent.Key)
+		logInfo("Loading children for %s: %s", parent.Key, jql)
+		jsonBlobs, err := client.searchIssues(jql, 1000)
+		if err != nil {
+			logError("Failed to load children for %s: %v", parent.Key, err)
+			parent.Children = nil
+			continue
 		}
-		if linkedIssue != nil {
-			linkedKey := getString(linkedIssue, "key", "")
-			if linkedKey != "" {
-				data, err := client.GetIssue(linkedKey, parentKey, parentSummary)
-				if err == nil && data != nil {
-					linked = append(linked, data)
-				}
-			}
+		var children []*IssueData
+		for _, blob := range jsonBlobs {
+			children = append(children, extractIssueData(blob, client.Server, parent.Key, pSummary))
 		}
+		parent.Children = children
+		logInfo("  Found %d children for %s", len(children), parent.Key)
 	}
-
-	logInfo("  Found %d linked issues for %s", len(linked), parentKey)
-	return linked
 }
 
 // getIssue fetches a single issue by key
@@ -424,57 +387,55 @@ const commentBatchSize = 50
 // GetMostRecentComments returns a map of issue key to the most recent comment (as a JSON blob).
 // Issues with no comments are omitted from the result.
 // Fetches in batches of at most commentBatchSize issue keys.
-func (c *JiraClient) GetMostRecentComments(issueKeys []string) (map[string]map[string]any, error) {
-	result := make(map[string]map[string]any, len(issueKeys))
-	if len(issueKeys) == 0 {
-		return result, nil
-	}
-
-	// Single issue: use comment endpoint
-	if len(issueKeys) == 1 {
-		comments, err := c.GetComments(issueKeys[0])
-		if err != nil {
-			return nil, err
-		}
-		if latest := findLatestComment(comments); latest != nil {
-			result[issueKeys[0]] = latest
-		}
-		return result, nil
-	}
-
-	// Bulk: fetch in batches of commentBatchSize
-	for i := 0; i < len(issueKeys); i += commentBatchSize {
+func (c *JiraClient) loadComments(issues []*IssueData) error {
+	issueCount := len(issues)
+	result := make(map[string]map[string]any, issueCount)
+	for i := 0; i < issueCount; i += commentBatchSize {
 		end := i + commentBatchSize
-		if end > len(issueKeys) {
-			end = len(issueKeys)
+		if end > issueCount {
+			end = issueCount
 		}
-		batch := issueKeys[i:end]
+		batch := issues[i:end]
 		batchResult, err := c.getMostRecentCommentsBulk(batch)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for k, v := range batchResult {
-			result[k] = v
+		for k, comment := range batchResult {
+			result[k] = comment
 		}
 	}
-	return result, nil
+
+	// map comments into issues
+	for _, issue := range issues {
+		commentJson := result[issue.Key]
+		if commentJson == nil {
+			continue
+		}
+		commentId := getString(commentJson, "id", "")
+		issue.Comment = IssueComment{
+			Url:     fmt.Sprintf("%s?focusedId=%s&page=com.atlassian.jira.plugin.system.issuetabpanels%%3Acomment-tabpanel#comment-%s", issue.URL, commentId, commentId),
+			Created: getString(commentJson, "updated", ""),
+		}
+	}
+	return nil
 }
 
 // getMostRecentCommentsBulk fetches issues via search API with comment field (one request).
-func (c *JiraClient) getMostRecentCommentsBulk(issueKeys []string) (map[string]map[string]any, error) {
-	result := make(map[string]map[string]any, len(issueKeys))
+func (c *JiraClient) getMostRecentCommentsBulk(issues []*IssueData) (map[string]map[string]any, error) {
+	issueCount := len(issues)
+	result := make(map[string]map[string]any, issueCount)
 
 	// Build JQL: key in (A, B, C)
-	quoted := make([]string, len(issueKeys))
-	for i, k := range issueKeys {
-		quoted[i] = fmt.Sprintf("%q", k)
+	quoted := make([]string, issueCount)
+	for i, k := range issues {
+		quoted[i] = fmt.Sprintf("%q", k.Key)
 	}
 	jql := "key in (" + strings.Join(quoted, ",") + ")"
 
 	params := map[string]string{
 		"jql":        jql,
 		"fields":     "comment",
-		"maxResults": fmt.Sprintf("%d", len(issueKeys)),
+		"maxResults": fmt.Sprintf("%d", issueCount),
 	}
 
 	response, err := c.getJson("search", params)
@@ -482,8 +443,8 @@ func (c *JiraClient) getMostRecentCommentsBulk(issueKeys []string) (map[string]m
 		return nil, err
 	}
 
-	issues := getMapList(response, "issues")
-	for _, issue := range issues {
+	responseIssues := getMapList(response, "issues")
+	for _, issue := range responseIssues {
 		key := getString(issue, "key", "")
 		fields := getMap(issue, "fields")
 		commentObj := getMap(fields, "comment")
@@ -603,6 +564,24 @@ func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]m
 	}
 
 	return result, nil
+}
+
+// isStale returns true if the issue is past its target date and not done
+func isStale(targetEnd string) bool {
+	days, ok := DaysFromNow(targetEnd)
+	if !ok {
+		return false
+	}
+	return days < 0
+}
+
+// isDueWithinNextMonth returns true if the issue has a target end date within the next calendar month and is not done.
+func isDueWithinNextMonth(targetEnd string) bool {
+	days, ok := DaysFromNow(targetEnd)
+	if !ok {
+		return false
+	}
+	return days > 0 && days <= 30
 }
 
 // Helper functions for parsing JSON responses

@@ -129,7 +129,6 @@ var (
 // ReportConfig holds options for report generation
 type ReportConfig struct {
 	Title          string
-	ShowChildren   bool
 	UpdatedAfter   *time.Time
 	NoCommentAfter *time.Time
 	OutputFile     string
@@ -154,8 +153,8 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q children=%t since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t",
-		c.Title, c.JQLQuery, c.ShowChildren, since, noComment, c.OutputFile,
+	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t",
+		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
 		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput, c.SimpleOutput, c.SummaryOutput)
 }
 
@@ -211,7 +210,7 @@ func ParseJiraDate(dateStr string) (time.Time, error) {
 
 // DaysFromNow returns the number of days from today for the given date string.
 // Positive = future, negative = past. The second return is false if the date cannot be parsed.
-// "Today" and date-only YYYY-MM-DD values use the UTC calendar day (see also IsDueWithinNextMonth).
+// "Today" and date-only YYYY-MM-DD values use the UTC calendar day (see also isDueWithinNextMonth).
 func DaysFromNow(dateStr string) (int, bool) {
 	if dateStr == "" || dateStr == "None" {
 		return 0, false
@@ -237,60 +236,43 @@ func DaysFromNow(dateStr string) (int, bool) {
 	return days, true
 }
 
-// IsStale returns true if the issue is past its target date and not done
-func IsStale(targetEnd string) bool {
-	days, ok := DaysFromNow(targetEnd)
-	if !ok {
-		return false
-	}
-	return days < 0
-}
-
-// IsDueWithinNextMonth returns true if the issue has a target end date within the next calendar month and is not done.
-func IsDueWithinNextMonth(targetEnd string) bool {
-	days, ok := DaysFromNow(targetEnd)
-	if !ok {
-		return false
-	}
-	return days > 0 && days <= 30
-}
-
 // FetchReportIssues generates a report of issues. It tries the cache first; on hit it returns
 // cached data (client may be nil for cache-only lookup). On cache miss with client == nil it
 // returns ErrCacheMiss. On cache miss with client != nil it fetches from Jira, writes the
 // cache, and returns the result.
-func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, []*IssueData, error) {
+func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, error) {
 	logInfo("Fetching issues for configuration: %v", cfg)
 
-	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.ShowChildren)
+	key := CacheKey(cfg.JQLQuery, issueKeys)
 	if err := EnsureCacheDir(); err != nil {
 		logWarning("Cache dir unavailable: %v", err)
 	} else {
 		// Check cache first without pruning (pruning does ReadDir+Stat on every file and can be slow).
 		path, err := cachePath(key)
 		if err == nil && CacheValid(path, cacheTTL) {
-			parentIssues, childIssues, err := ReadCache(path)
+			parentIssues, err := ReadCache(path)
 			if err == nil {
 				logInfo("Using cached results at %s.", path)
-				return parentIssues, childIssues, nil
+				return parentIssues, nil
 			}
 			logDebug("Cache read failed: %v", err)
 		}
 	}
 
 	if client == nil {
-		return nil, nil, ErrCacheMiss
+		return nil, ErrCacheMiss
 	}
 
 	// Prune only when we're about to fetch (and possibly write); avoids slow ReadDir+Stat on cache-hit path.
 	_ = PruneCache(cacheTTL)
 
+	// load raw issue data
 	var parentIssues []*IssueData
 	if cfg.JQLQuery != "" {
 		issues, err := client.GetIssuesFromQuery(cfg.JQLQuery)
 		if err != nil {
 			logError("JQL query failed: %v", err)
-			return nil, nil, err
+			return nil, err
 		}
 		parentIssues = issues
 
@@ -310,62 +292,27 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 		}
 	}
 
-	// collect all child issues
-	var childIssues []*IssueData
-	if cfg.ShowChildren {
-		for _, issue := range parentIssues {
-			subtasks := client.GetSubtasks(issue.Key, issue.Summary)
-			childIssues = append(childIssues, subtasks...)
-			linked := client.GetLinkedIssues(issue.Key, issue.Summary)
-			childIssues = append(childIssues, linked...)
-		}
-	}
+	// load children
+	client.loadChildren(parentIssues)
 
-	// Collect all issue keys we'll display (for comment fetch)
-	allKeys := make([]string, 0, len(parentIssues)+len(childIssues))
-	for _, p := range parentIssues {
-		allKeys = append(allKeys, p.Key)
-	}
-	for _, c := range childIssues {
-		allKeys = append(allKeys, c.Key)
-	}
-
-	// Lookup most recent comments for all displayed issues
-	mostRecentComments, err := client.GetMostRecentComments(allKeys)
-	if err != nil {
-		logError("Failed to get most recent comments: %v", err)
-	} else {
-		for _, s := range [][]*IssueData{parentIssues, childIssues} {
-			for _, issue := range s {
-				commentJson := mostRecentComments[issue.Key]
-				if commentJson == nil {
-					continue
-				}
-				commentId := getString(commentJson, "id", "")
-				issue.Comment = IssueComment{
-					Url:     fmt.Sprintf("%s?focusedId=%s&page=com.atlassian.jira.plugin.system.issuetabpanels%%3Acomment-tabpanel#comment-%s", issue.URL, commentId, commentId),
-					Created: getString(commentJson, "updated", ""),
-				}
-			}
-		}
-	}
+	// load comments
+	client.loadComments(parentIssues)
 
 	// Write cache for next run
 	if path, err := cachePath(key); err == nil {
-		if wErr := WriteCache(path, parentIssues, childIssues); wErr != nil {
+		if wErr := WriteCache(path, parentIssues); wErr != nil {
 			logWarning("Failed to write cache: %v", wErr)
 		} else {
 			logDebug("Cached results to %s", path)
 		}
 	}
 
-	return parentIssues, childIssues, nil
+	return parentIssues, nil
 }
 
 func main() {
 	// Define flags
 	jqlQuery := flag.String("jql", "", "JQL query to fetch issues (alternative to specifying keys)")
-	children := flag.Bool("children", false, "Render children of directly referenced issues")
 	sinceStr := flag.String("since", "", "Only include issues updated on or after: YYYY-MM-DD, or N (days ago, e.g. 14)")
 	needsUpdate := flag.Int("needs-update", 0, "Exclude issues with a comment in the past N days (0=disabled)")
 	title := flag.String("title", "", "Custom title for the report")
@@ -515,7 +462,6 @@ Examples:
 
 	cfg := &ReportConfig{
 		Title:          *title,
-		ShowChildren:   *children,
 		UpdatedAfter:   since,
 		NoCommentAfter: noCommentAfter,
 		OutputFile:     *outputFile,
@@ -530,9 +476,9 @@ Examples:
 
 	// Try cache first when not in individual mode (skip Jira entirely on hit)
 	if !*individual {
-		parentIssues, childIssues, err := FetchReportIssues(nil, issueKeys, cfg)
+		parentIssues, err := FetchReportIssues(nil, issueKeys, cfg)
 		if err == nil {
-			RenderReport(parentIssues, childIssues, cfg)
+			RenderReport(parentIssues, cfg)
 			os.Exit(0)
 		}
 		if err != ErrCacheMiss {
@@ -561,19 +507,19 @@ Examples:
 	// if there are multiple "parents", render multiple reports.
 	if *individual {
 		for _, issueKey := range issueKeys {
-			parentIssues, childIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)
+			parentIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)
 			if err != nil {
 				logError("%v", err)
 				os.Exit(1)
 			}
-			RenderReport(parentIssues, childIssues, cfg)
+			RenderReport(parentIssues, cfg)
 		}
 	} else {
-		parentIssues, childIssues, err := FetchReportIssues(client, issueKeys, cfg)
+		parentIssues, err := FetchReportIssues(client, issueKeys, cfg)
 		if err != nil {
 			logError("%v", err)
 			os.Exit(1)
 		}
-		RenderReport(parentIssues, childIssues, cfg)
+		RenderReport(parentIssues, cfg)
 	}
 }

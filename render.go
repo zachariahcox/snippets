@@ -14,17 +14,14 @@ import (
 	"time"
 )
 
-func RenderReport(parentIssues []*IssueData, childIssues []*IssueData, cfg *ReportConfig) {
-	if cfg == nil || (parentIssues == nil && childIssues == nil) {
+func RenderReport(parentIssues []*IssueData, cfg *ReportConfig) {
+	if cfg == nil || parentIssues == nil {
 		return
 	}
 
 	// Render output
 	var outputData string
 	issuesToRender := parentIssues
-	if cfg.ShowChildren {
-		issuesToRender = childIssues
-	}
 	if cfg.JSONOutput {
 		outputData = RenderJSONReport(issuesToRender, cfg)
 	} else if cfg.CSVOutput {
@@ -90,13 +87,8 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
 	// Render header row (type between trending and status)
-	if cfg.ShowChildren {
-		result = append(result, "\n| trending | type | status | parent | issue | assignee | target date | last update |")
-		result = append(result, "|---|---|---|---|:--|:--|:--|:--|")
-	} else {
-		result = append(result, "\n| trending | type | status | issue | assignee | target date | last update |")
-		result = append(result, "|---|---|---|---|:--|:--|:--|")
-	}
+	result = append(result, "\n| trending | type | status | issue | assignee | target date | last update |")
+	result = append(result, "|---|---|---|---|:--|:--|:--|")
 
 	// Render rows
 	for _, issue := range issues {
@@ -112,14 +104,8 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 		// Render row
 		var row string
-		if cfg.ShowChildren {
-			parentLink := fmt.Sprintf("[%s](%s)", issue.ParentKey, issue.ParentURL)
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |",
-				trendingWithEmoji, typeOrStatus, issue.Status, parentLink, issueLink, issue.Assignee, targetEnd, timestampLink)
-		} else {
-			row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
-				trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
-		}
+		row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
+			trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
 		result = append(result, row)
 	}
 
