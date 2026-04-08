@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
+
+// defaultJiraConcurrency is used when MaxConcurrent is unset or invalid.
+const defaultJiraConcurrency = 8
 
 // JiraClient is a simple Jira REST API client
 type JiraClient struct {
@@ -19,6 +23,12 @@ type JiraClient struct {
 	APIVersion string
 	IsCloud    bool
 	HTTPClient *http.Client
+
+	// MaxConcurrent caps parallel REST calls (issue fetch, child JQL, comment batches). If < 1, defaultJiraConcurrency is used.
+	MaxConcurrent int
+
+	muCustomFields     sync.Mutex
+	customFieldsLoaded bool
 }
 
 // Status categories mapped to emojis
@@ -117,6 +127,26 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 
 	logDebug("Connected to Jira server: %s", server)
 	return client, nil
+}
+
+func (c *JiraClient) concurrencyCap() int {
+	if c.MaxConcurrent < 1 {
+		return defaultJiraConcurrency
+	}
+	return c.MaxConcurrent
+}
+
+// ensureCustomFieldsLoaded resolves custom field IDs once; safe for concurrent FetchIssuesFromQuery/searchIssues.
+func (c *JiraClient) ensureCustomFieldsLoaded() {
+	c.muCustomFields.Lock()
+	defer c.muCustomFields.Unlock()
+	if c.customFieldsLoaded {
+		return
+	}
+	if err := c.loadCustomFields(customFields); err != nil {
+		logWarning("Could not load custom fields: %v", err)
+	}
+	c.customFieldsLoaded = true
 }
 
 // extractIssueData extracts relevant data from a Jira issue API response
@@ -218,20 +248,16 @@ func extractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	}
 }
 
-// GetIssue fetches issue details from Jira
-func (client *JiraClient) GetIssue(issueKey, parentKey, parentSummary string) (*IssueData, error) {
-	logInfo("Fetching one issue: %s", issueKey)
-	issue, err := client.getIssue(issueKey)
+// FetchIssue fetches issue details from Jira
+func (client *JiraClient) FetchIssue(issueKey string) (*IssueData, error) {
+	issues, err := client.FetchIssuesByKeys([]string{issueKey})
 	if err != nil {
-		logError("  - Failed to fetch issue %s: %v", issueKey, err)
 		return nil, err
 	}
-	data := extractIssueData(issue, client.Server, parentKey, parentSummary)
-	logInfo("  - Fetched one issue: %s", issueKey)
-	return data, nil
+	return issues[0], nil
 }
 
-func (client *JiraClient) GetIssuesFromQuery(jqlQuery string) ([]*IssueData, error) {
+func (client *JiraClient) FetchIssuesFromQuery(jqlQuery string) ([]*IssueData, error) {
 	logInfo("Executing JQL query: %s", jqlQuery)
 
 	issues := []*IssueData{} // we don't know how many there will be
@@ -251,44 +277,64 @@ func (client *JiraClient) GetIssuesFromQuery(jqlQuery string) ([]*IssueData, err
 	return issues, nil
 }
 
+// FetchIssuesByKeys loads issues in parallel (bounded by MaxConcurrent), preserving input key order; failed keys are skipped.
+func (client *JiraClient) FetchIssuesByKeys(issueKeys []string) ([]*IssueData, error) {
+	if len(issueKeys) == 0 {
+		return nil, nil
+	}
+
+	// for batches of 50, generate a jql query to fetch the issues
+	issues := []*IssueData{}
+	for i := 0; i < len(issueKeys); i += 50 {
+		end := i + 50
+		if end > len(issueKeys) {
+			end = len(issueKeys)
+		}
+		batch := issueKeys[i:end]
+		jql := fmt.Sprintf("key in (%s)", strings.Join(batch, ","))
+
+		// fetch the issues
+		result, err := client.FetchIssuesFromQuery(jql)
+		if err != nil {
+			logError("Failed to fetch issues: %v", err)
+			return nil, err
+		}
+		issues = append(issues, result...)
+	}
+	return issues, nil
+}
+
 func (client *JiraClient) loadChildren(parents []*IssueData) {
+	lim := client.concurrencyCap()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, lim)
 	for _, parent := range parents {
 		if parent == nil {
 			continue
 		}
-		pSummary := parent.Summary
-		if pSummary == "" {
-			if issue, err := client.getIssue(parent.Key); err == nil {
-				pSummary = getString(getMap(issue, "fields"), "summary", "")
-			}
-		}
-		jql := fmt.Sprintf(`issue in linkedIssues(%s, "is parent of") or issue in childIssuesOf(%s)`, parent.Key, parent.Key)
-		logInfo("Loading children for %s: %s", parent.Key, jql)
-		jsonBlobs, err := client.searchIssues(jql, 1000)
-		if err != nil {
-			logError("Failed to load children for %s: %v", parent.Key, err)
-			parent.Children = nil
-			continue
-		}
-		var children []*IssueData
-		for _, blob := range jsonBlobs {
-			children = append(children, extractIssueData(blob, client.Server, parent.Key, pSummary))
-		}
-		parent.Children = children
-		logInfo("  Found %d children for %s", len(children), parent.Key)
-	}
-}
+		wg.Add(1)
+		go func(p *IssueData) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-// getIssue fetches a single issue by key
-func (c *JiraClient) getIssue(issueKey string) (map[string]any, error) {
-	fields := "summary,status,issuetype,assignee,priority,created,updated,subtasks,issuelinks"
-	// Add custom field IDs
-	for _, id := range customFields {
-		if id != "" {
-			fields += "," + id
-		}
+			jql := fmt.Sprintf(`issue in linkedIssues(%s, "is parent of") or issue in childIssuesOf(%s)`, p.Key, p.Key)
+			logInfo("Loading children for %s: %s", p.Key, jql)
+			jsonBlobs, err := client.searchIssues(jql, 1000)
+			if err != nil {
+				logError("Failed to load children for %s: %v", p.Key, err)
+				p.Children = nil
+				return
+			}
+			var children []*IssueData
+			for _, blob := range jsonBlobs {
+				children = append(children, extractIssueData(blob, client.Server, p.Key, p.Summary))
+			}
+			p.Children = children
+			logInfo("  Found %d children for %s", len(children), p.Key)
+		}(parent)
 	}
-	return c.getJson(fmt.Sprintf("issue/%s", issueKey), map[string]string{"fields": fields})
+	wg.Wait()
 }
 
 // resolves custom field names to IDs
@@ -315,10 +361,7 @@ func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any,
 	var b strings.Builder
 	b.WriteString("summary,status,issuetype,assignee,priority,created,updated")
 
-	// Load custom fields first
-	if err := c.loadCustomFields(customFields); err != nil {
-		logWarning("Could not load custom fields: %v", err)
-	}
+	c.ensureCustomFieldsLoaded()
 
 	// Add custom field IDs
 	for _, id := range customFields {
@@ -390,19 +433,43 @@ const commentBatchSize = 50
 func (c *JiraClient) loadComments(issues []*IssueData) error {
 	issueCount := len(issues)
 	result := make(map[string]map[string]any, issueCount)
+	lim := c.concurrencyCap()
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, lim)
 	for i := 0; i < issueCount; i += commentBatchSize {
 		end := i + commentBatchSize
 		if end > issueCount {
 			end = issueCount
 		}
-		batch := issues[i:end]
-		batchResult, err := c.getMostRecentCommentsBulk(batch)
-		if err != nil {
-			return err
-		}
-		for k, comment := range batchResult {
-			result[k] = comment
-		}
+		batch := append([]*IssueData(nil), issues[i:end]...)
+		wg.Add(1)
+		go func(batch []*IssueData) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			batchResult, err := c.getMostRecentCommentsBulk(batch)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			for k, comment := range batchResult {
+				result[k] = comment
+			}
+			mu.Unlock()
+		}(batch)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 
 	// map comments into issues

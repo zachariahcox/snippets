@@ -49,6 +49,19 @@ import (
 // Default configuration values
 const defaultPageSize = 50
 
+// resolveJiraConcurrency returns max parallel Jira calls: flag > 0 wins, else JIRA_CONCURRENCY, else 8.
+func resolveJiraConcurrency(flagVal int, env string) int {
+	if flagVal > 0 {
+		return flagVal
+	}
+	if env != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(env)); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8
+}
+
 // credsFileName is the name of the optional shell script that can export JIRA_* vars.
 const credsFileName = ".snippets/creds.sh"
 
@@ -269,7 +282,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	// load raw issue data
 	var parentIssues []*IssueData
 	if cfg.JQLQuery != "" {
-		issues, err := client.GetIssuesFromQuery(cfg.JQLQuery)
+		issues, err := client.FetchIssuesFromQuery(cfg.JQLQuery)
 		if err != nil {
 			logError("JQL query failed: %v", err)
 			return nil, err
@@ -282,14 +295,12 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 			issueKeys[i] = issue.Key
 		}
 	} else {
-		for _, key := range issueKeys {
-			issue, err := client.GetIssue(key, "", "")
-			if err != nil {
-				logError("Failed to get issue %s: %v", key, err)
-				continue
-			}
-			parentIssues = append(parentIssues, issue)
+		issues, err := client.FetchIssuesByKeys(issueKeys)
+		if err != nil {
+			logError("Failed to fetch issues: %v", err)
+			return nil, err
 		}
+		parentIssues = issues
 	}
 
 	// load children
@@ -332,6 +343,7 @@ func main() {
 	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	jiraConcurrency := flag.Int("jira-concurrency", 0, "Max parallel Jira API requests (0=use JIRA_CONCURRENCY env or 8)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: snippets [options] <issue_keys...>
@@ -346,6 +358,7 @@ Environment variables:
   JIRA_SERVER     - Jira server URL (required)
   JIRA_API_TOKEN  - API token or Personal Access Token (required)
   JIRA_EMAIL      - Your email/username (required for Cloud, optional for Server)
+  JIRA_CONCURRENCY - Optional max parallel API calls (default 8; overridden by --jira-concurrency)
 
 Examples:
   snippets PROJECT-123 PROJECT-456
@@ -502,6 +515,8 @@ Examples:
 		logError("%v", err)
 		os.Exit(1)
 	}
+	client.MaxConcurrent = resolveJiraConcurrency(*jiraConcurrency, os.Getenv("JIRA_CONCURRENCY"))
+	logDebug("Jira max concurrent requests: %d", client.concurrencyCap())
 
 	// Fetch issues and render report
 	// if there are multiple "parents", render multiple reports.
