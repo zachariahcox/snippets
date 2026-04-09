@@ -108,7 +108,7 @@ func TestExtractIssueData_createdUpdated(t *testing.T) {
 		"key": "P-1",
 		"fields": map[string]any{
 			"summary": "Test",
-			"status":  map[string]any{"name": "Done"},
+			"status":  map[string]any{"name": "Resolved"},
 			"created": "2024-06-15T09:00:00.000Z",
 			"updated": "2024-07-20T14:30:00.000-0700",
 		},
@@ -140,21 +140,25 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	if data.TrendingEmoji != "🟢" {
 		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
-	// When target end is set via custom field we'd get overdue. Skip that unless we can set customFields.
-	// Test that done + past target does NOT become overdue
-	doneIssue := map[string]any{
+	// Resolved/closed are terminal Jira statuses; "done" is not a status string we branch on.
+	// Resolved + past target end must stay trending done (not flipped to off track by isStale).
+	oldKey := customFields["Target end"]
+	customFields["Target end"] = "targetEnd"
+	defer func() { customFields["Target end"] = oldKey }()
+	resolvedIssue := map[string]any{
 		"key": "P-2",
 		"fields": map[string]any{
-			"summary": "Done task",
-			"status":  map[string]any{"name": "done"},
-			"created": "2025-01-01T00:00:00Z",
-			"updated": "2025-01-02T00:00:00Z",
+			"summary":   "Shipped task",
+			"status":    map[string]any{"name": "Resolved"},
+			"created":   "2025-01-01T00:00:00Z",
+			"updated":   "2025-01-02T00:00:00Z",
+			"targetEnd": "2020-01-01",
 		},
 	}
-	dataDone := extractIssueData(doneIssue, "https://jira.example.com")
-	computeTrending(dataDone)
-	if dataDone.Trending != "done" || dataDone.TrendingEmoji != "🟣" {
-		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.TrendingEmoji)
+	dataResolved := extractIssueData(resolvedIssue, "https://jira.example.com")
+	computeTrending(dataResolved)
+	if dataResolved.Trending != "done" || dataResolved.TrendingEmoji != "🟣" {
+		t.Errorf("resolved issue (past target): Trending=%q Emoji=%q, want done/🟣", dataResolved.Trending, dataResolved.TrendingEmoji)
 	}
 }
 
