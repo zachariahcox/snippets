@@ -162,7 +162,7 @@ func computeTrending(issue *IssueData) {
 	trending := "not started" // default to not started
 
 	switch issue.Status {
-	case "closed", "resolved", "done":
+	case "closed", "resolved":
 		trending = "done"
 		issue.TrendingComment = "🎉"
 	case "blocked":
