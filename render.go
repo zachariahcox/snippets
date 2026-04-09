@@ -76,6 +76,11 @@ func escapeMarkdownInline(s string) string {
 	return b.String()
 }
 
+// trendingCommentForDisplay trims whitespace; empty means no comment (render as blank).
+func trendingCommentForDisplay(s string) string {
+	return strings.TrimSpace(s)
+}
+
 // RenderMarkdownReport renders issues as a markdown report
 func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	logInfo("Rendering markdown report for %d issues", len(issues))
@@ -86,9 +91,9 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
-	// Render header row (type between trending and status)
-	result = append(result, "\n| trending | type | status | issue | assignee | target date | last update |")
-	result = append(result, "|---|---|---|---|:--|:--|:--|")
+	// Render header row (type between trending and status); trending comment last
+	result = append(result, "\n| trending | type | status | issue | assignee | target date | last update | comment |")
+	result = append(result, "|---|---|---|---|:--|:--|:--|:--|")
 
 	// Render rows
 	for _, issue := range issues {
@@ -102,10 +107,14 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 			typeOrStatus = issue.Status
 		}
 
+		trendingCommentCell := trendingCommentForDisplay(issue.TrendingComment)
+		if trendingCommentCell != "" {
+			trendingCommentCell = escapeMarkdownInline(trendingCommentCell)
+		}
+
 		// Render row
-		var row string
-		row = fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s |",
-			trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink)
+		row := fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |",
+			trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink, trendingCommentCell)
 		result = append(result, row)
 	}
 
@@ -191,8 +200,9 @@ func RenderCSVReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	headers := []string{
 		"key", "url", "summary", "status", "status_emoji", "assignee", "priority",
-		"created", "updated", "target_end", "parent_key", "parent_summary", "parent_url",
+		"created", "updated", "target_end",
 		"trending", "trending_emoji", "type", "comment_url", "comment_created",
+		"trending_comment",
 	}
 	escapedHeaders := make([]string, len(headers))
 	for i, h := range headers {
@@ -217,14 +227,12 @@ func RenderCSVReport(issues []*IssueData, cfg *ReportConfig) string {
 			issue.Created,
 			issue.Updated,
 			FormatDate(issue.TargetEnd),
-			issue.ParentKey,
-			issue.ParentSummary,
-			issue.ParentURL,
 			issue.Trending,
 			issue.TrendingEmoji,
 			issue.Type,
 			issue.Comment.Url,
 			commentCreated,
+			trendingCommentForDisplay(issue.TrendingComment),
 		}
 		escapedRow := make([]string, len(row))
 		for i, v := range row {
@@ -245,6 +253,9 @@ func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
 		if issue.Comment.Url != "" {
 			line += fmt.Sprintf(" ([last update](%s))", issue.Comment.Url)
 		}
+		if tc := trendingCommentForDisplay(issue.TrendingComment); tc != "" {
+			line += fmt.Sprintf(", (%s)", tc)
+		}
 		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
@@ -260,15 +271,15 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 	// minwidth=4 so emoji columns get padding and align; tabwriter counts runes, not display width
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 
-	// column headers: trending, status, due, type, key, summary
-	format := "%s\t%s\t%s\t%s\t%s\t%s\n"
+	// column headers: trending, status, due, type, key, summary, trending comment
+	format := "%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
 	for _, issue := range issues {
 		days, ok := DaysFromNow(issue.TargetEnd)
-		dueStr := "N/A"
+		dueStr := "?"
 		if ok {
 			dueStr = fmt.Sprintf("due in %d days", days)
 		} else {
-			dueStr = "due in N/A"
+			dueStr = "(no target date)"
 		}
 		fmt.Fprintf(tw, format,
 			issue.TrendingEmoji,
@@ -276,7 +287,8 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 			dueStr,
 			issue.Type,
 			issue.Key,
-			strings.ReplaceAll(issue.Summary, "\n", " "))
+			strings.ReplaceAll(issue.Summary, "\n", " "),
+			trendingCommentForDisplay(issue.TrendingComment))
 	}
 	tw.Flush()
 	return strings.TrimRight(buf.String(), "\n")

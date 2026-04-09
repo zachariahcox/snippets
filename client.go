@@ -69,28 +69,26 @@ var customFields = map[string]string{
 
 // IssueData represents extracted issue data
 type IssueComment struct {
-	Url     string
-	Created string
+	Url     string `json:"url"`
+	Created string `json:"created"`
 }
 type IssueData struct {
-	Key           string
-	URL           string
-	Summary       string
-	Status        string
-	StatusEmoji   string `json:"status_emoji"`
-	Assignee      string
-	Priority      string
-	Created       string
-	Updated       string
-	TargetEnd     string
-	ParentKey     string
-	ParentSummary string
-	ParentURL     string
-	Trending      string
-	TrendingEmoji string `json:"Emoji"` // keep "Emoji" for cache compat
-	Comment       IssueComment
-	Type          string       // one of "initiative","epic", "story","subtask"
-	Children      []*IssueData // all the children issues
+	Key             string       `json:"key"`
+	URL             string       `json:"url"`
+	Summary         string       `json:"summary"`
+	Status          string       `json:"status"`
+	StatusEmoji     string       `json:"status_emoji"`
+	Assignee        string       `json:"assignee"`
+	Priority        string       `json:"priority"`
+	Created         string       `json:"created"`
+	Updated         string       `json:"updated"`
+	TargetEnd       string       `json:"target_end"`
+	Trending        string       `json:"trending"`
+	TrendingEmoji   string       `json:"Emoji"` // cache compat: historical key name
+	TrendingComment string       `json:"trending_comment"`
+	Comment         IssueComment `json:"comment"`
+	Type            string       `json:"type"` // initiative, epic, story, subtask, …
+	Children        []*IssueData `json:"children"`
 }
 
 // NewJiraClient creates a new Jira client
@@ -149,8 +147,92 @@ func (c *JiraClient) ensureCustomFieldsLoaded() {
 	c.customFieldsLoaded = true
 }
 
-// extractIssueData extracts relevant data from a Jira issue API response
-func extractIssueData(issue map[string]any, serverURL string, parentKey, parentSummary string) *IssueData {
+// computeTrending computes the trending status for an issue and its children
+func computeTrending(issue *IssueData) {
+	if issue.Trending != "" {
+		return // already computed
+	}
+	if issue.Status == "unknown" {
+		issue.Trending = "unknown"
+		issue.TrendingEmoji = "❓"
+		return
+	}
+
+	// approximate trending based on status
+	trending := "not started" // default to not started
+
+	switch issue.Status {
+	case "closed", "resolved", "done":
+		trending = "done"
+		issue.TrendingComment = "🎉"
+	case "blocked":
+		trending = "off track"
+	case "not started", "new", "vetting", "ready for work":
+		trending = "not started"
+		if isDueWithinDays(issue.TargetEnd, 30) {
+			trending = "at risk"
+			issue.TrendingComment = fmt.Sprintf("due within %d days but not started.", 30)
+		}
+	case "in progress":
+		trending = "on track"
+	default:
+		trending = "INCONCLUSIVE"
+	}
+
+	// past target end -> off track (unless already done)
+	if trending != "done" && isStale(issue.TargetEnd) {
+		trending = "off track"
+	}
+
+	// consider the children
+	if len(issue.Children) > 0 {
+		if trending != "done" && trending != "blocked" && trending != "at risk" && trending != "off track" {
+			for _, child := range issue.Children {
+				// what's their status? (recursive)
+				computeTrending(child)
+
+				// if children are in any of the following statuses, set trending to that status
+				for _, t := range []string{"blocked", "off track", "at risk"} {
+					if child.Trending == t {
+						trending = t
+						issue.TrendingComment = fmt.Sprintf("child %s is '%s'", child.Key, t)
+						break
+					}
+				}
+			}
+
+			// if all children are done, set trending to done
+			if trending != "done" {
+				allDone := true
+				for _, child := range issue.Children {
+					computeTrending(child)
+					if child.Trending != "done" {
+						allDone = false
+						break
+					}
+				}
+				if allDone {
+					trending = "done"
+					issue.TrendingComment = "All children are done. What's left?"
+				}
+			}
+		}
+	}
+
+	// get emoji
+	trendingEmoji := "❓"
+	if value, ok := trendingEmojis[trending]; ok {
+		trendingEmoji = value
+	}
+
+	// save values
+	issue.Trending = trending
+	issue.TrendingEmoji = trendingEmoji
+}
+
+// extractIssueData extracts relevant data from a Jira issue API response.
+// Parent/child relationships are represented only via IssueData.Children after loadChildren.
+func extractIssueData(issue map[string]any, serverURL string) *IssueData {
 	fields := getMap(issue, "fields")
 	issueKey := getString(issue, "key", "")
 
@@ -189,62 +271,18 @@ func extractIssueData(issue map[string]any, serverURL string, parentKey, parentS
 	// Build issue URL
 	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
 
-	// Handle parent info
-	if parentKey == "" {
-		parentKey = issueKey
-	}
-	if parentSummary == "" {
-		parentSummary = summary
-	}
-	parentURL := issueURL
-	if parentKey != issueKey {
-		parentURL = fmt.Sprintf("%s/browse/%s", serverURL, parentKey)
-	}
-
-	// approximate trending based on status
-	trending := "on track"
-	switch statusNormalized {
-	case "closed", "resolved":
-		trending = "done"
-	case "in progress":
-		trending = "on track"
-	case "not started", "new", "vetting", "ready for work":
-		if isDueWithinNextMonth(targetEnd) {
-			trending = "at risk"
-		} else {
-			trending = "not started"
-		}
-	case "blocked":
-		trending = "off track"
-	default:
-		trending = statusNormalized
-	}
-	// anything overdue is off track
-	if trending != "done" && isStale(targetEnd) {
-		trending = "off track"
-	}
-	trendingEmoji := "❓"
-	if value, ok := trendingEmojis[trending]; ok {
-		trendingEmoji = value
-	}
-
 	return &IssueData{
-		Type:          typeNormalized,
-		Key:           issueKey,
-		URL:           issueURL,
-		Summary:       summary,
-		Status:        statusNormalized,
-		Assignee:      assignee,
-		Priority:      priority,
-		Created:       created,
-		Updated:       updated,
-		TargetEnd:     targetEnd,
-		ParentKey:     parentKey,
-		ParentSummary: parentSummary,
-		ParentURL:     parentURL,
-		Trending:      trending,
-		TrendingEmoji: trendingEmoji,
-		StatusEmoji:   statusEmoji,
+		Type:        typeNormalized,
+		Key:         issueKey,
+		URL:         issueURL,
+		Summary:     summary,
+		Status:      statusNormalized,
+		Assignee:    assignee,
+		Priority:    priority,
+		Created:     created,
+		Updated:     updated,
+		TargetEnd:   targetEnd,
+		StatusEmoji: statusEmoji,
 	}
 }
 
@@ -269,7 +307,7 @@ func (client *JiraClient) FetchIssuesFromQuery(jqlQuery string) ([]*IssueData, e
 	}
 
 	for _, issueJsonBlob := range jsonBlobs {
-		issueData := extractIssueData(issueJsonBlob, client.Server, "", "")
+		issueData := extractIssueData(issueJsonBlob, client.Server)
 		issues = append(issues, issueData)
 	}
 
@@ -328,7 +366,7 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 			}
 			var children []*IssueData
 			for _, blob := range jsonBlobs {
-				children = append(children, extractIssueData(blob, client.Server, p.Key, p.Summary))
+				children = append(children, extractIssueData(blob, client.Server))
 			}
 			p.Children = children
 			logInfo("  Found %d children for %s", len(children), p.Key)
@@ -642,13 +680,13 @@ func isStale(targetEnd string) bool {
 	return days < 0
 }
 
-// isDueWithinNextMonth returns true if the issue has a target end date within the next calendar month and is not done.
-func isDueWithinNextMonth(targetEnd string) bool {
-	days, ok := DaysFromNow(targetEnd)
+// isDueWithinDays returns true if the issue has a target end date within the next n days and is not done.
+func isDueWithinDays(targetEnd string, days int) bool {
+	leftToGo, ok := DaysFromNow(targetEnd)
 	if !ok {
 		return false
 	}
-	return days > 0 && days <= 30
+	return leftToGo > 0 && leftToGo <= days
 }
 
 // Helper functions for parsing JSON responses

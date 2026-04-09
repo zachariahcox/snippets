@@ -309,6 +309,11 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	// load comments
 	client.loadComments(parentIssues)
 
+	// compute trending
+	for _, issue := range parentIssues {
+		computeTrending(issue)
+	}
+
 	// Write cache for next run
 	if path, err := cachePath(key); err == nil {
 		if wErr := WriteCache(path, parentIssues); wErr != nil {

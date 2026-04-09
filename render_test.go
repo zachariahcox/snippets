@@ -78,16 +78,16 @@ func TestIsDueWithinNextMonth(t *testing.T) {
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
 	twoMonths := time.Now().UTC().AddDate(0, 2, 0).Format("2006-01-02")
 
-	if isDueWithinNextMonth("") {
+	if isDueWithinDays("", 30) {
 		t.Error("isDueWithinNextMonth(\"\") want false")
 	}
-	if isDueWithinNextMonth("None") {
+	if isDueWithinDays("None", 30) {
 		t.Error("isDueWithinNextMonth(None) want false")
 	}
-	if !isDueWithinNextMonth(tomorrow) {
+	if !isDueWithinDays(tomorrow, 30) {
 		t.Error("isDueWithinNextMonth(tomorrow) want true")
 	}
-	if isDueWithinNextMonth(twoMonths) {
+	if isDueWithinDays(twoMonths, 30) {
 		t.Error("isDueWithinNextMonth(2 months) want false")
 	}
 }
@@ -159,6 +159,9 @@ func TestRenderMarkdownReport(t *testing.T) {
 	if !strings.Contains(out, "| type |") {
 		t.Error("expected type column in markdown header")
 	}
+	if !strings.Contains(out, "| comment |") {
+		t.Error("expected trending comment column in markdown header")
+	}
 	if !strings.Contains(out, "story") {
 		t.Error("expected issue type (story) in markdown output")
 	}
@@ -228,19 +231,17 @@ func TestRenderMarkdownReport_titleEscaped(t *testing.T) {
 func TestRenderMarkdownReport_subtaskRow(t *testing.T) {
 	issues := []*IssueData{
 		{
-			Key:           "PROJ-123-1",
-			URL:           "https://jira/browse/PROJ-123-1",
-			Summary:       "Subtask one",
-			Status:        "in progress",
-			Type:          "subtask",
-			Assignee:      "Bob",
-			ParentKey:     "PROJ-123",
-			ParentSummary: "Parent epic",
-			ParentURL:     "https://jira/browse/PROJ-123",
-			TargetEnd:     "2025-02-01",
-			Updated:       "2025-01-15",
-			TrendingEmoji: "🟢",
-			Trending:      "in progress",
+			Key:             "PROJ-123-1",
+			URL:             "https://jira/browse/PROJ-123-1",
+			Summary:         "Subtask one",
+			Status:          "in progress",
+			Type:            "subtask",
+			Assignee:        "Bob",
+			TargetEnd:       "2025-02-01",
+			Updated:         "2025-01-15",
+			TrendingEmoji:   "🟢",
+			Trending:        "in progress",
+			TrendingComment: "Watch dependency X",
 		},
 	}
 	cfg := &ReportConfig{Title: "Children Report"}
@@ -256,6 +257,9 @@ func TestRenderMarkdownReport_subtaskRow(t *testing.T) {
 	}
 	if !strings.Contains(out, "subtask") {
 		t.Error("expected issue type (subtask) in markdown output")
+	}
+	if !strings.Contains(out, "Watch dependency X") {
+		t.Error("expected trending comment in markdown row")
 	}
 }
 
@@ -319,6 +323,9 @@ func TestRenderJSONReport(t *testing.T) {
 	}
 	if !json.Valid([]byte(out)) {
 		t.Errorf("output is not valid JSON: %s", out)
+	}
+	if !strings.Contains(out, `"trending_comment"`) {
+		t.Error("JSON output should include trending_comment field")
 	}
 	var decoded []*IssueData
 	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
@@ -399,14 +406,16 @@ func TestRenderCSVReport(t *testing.T) {
 	if !strings.Contains(out, "status") {
 		t.Error("expected header row with status column")
 	}
+	if !strings.Contains(out, "trending_comment") {
+		t.Error("expected trending_comment column in CSV header")
+	}
 }
 
-func TestRenderCSVReport_parentFields(t *testing.T) {
+func TestRenderCSVReport_noParentColumns(t *testing.T) {
 	issues := []*IssueData{
 		{
 			Key:           "PROJ-123-1",
 			Summary:       "Subtask",
-			ParentKey:     "PROJ-123",
 			Assignee:      "Bob",
 			TrendingEmoji: "🟢",
 			Trending:      "in progress",
@@ -414,11 +423,11 @@ func TestRenderCSVReport_parentFields(t *testing.T) {
 	}
 	cfg := &ReportConfig{}
 	out := RenderCSVReport(issues, cfg)
-	if !strings.Contains(out, "parent_key") {
-		t.Error("expected parent_key column in CSV header")
+	if strings.Contains(out, "parent_key") || strings.Contains(out, "parent_summary") || strings.Contains(out, "parent_url") {
+		t.Error("CSV should not include parent_* columns (use Children in JSON for hierarchy)")
 	}
-	if !strings.Contains(out, "PROJ-123") {
-		t.Error("expected parent key in output")
+	if !strings.Contains(out, "PROJ-123-1") {
+		t.Error("expected issue key in output")
 	}
 }
 
@@ -467,6 +476,14 @@ func TestRenderSlackReport(t *testing.T) {
 	}
 	if !strings.Contains(out, "([last update](https://jira/comment/1))") {
 		t.Error("expected update link for first issue")
+	}
+	if strings.Contains(out, ", ()") {
+		t.Error("empty trending comment should not add a trailing segment")
+	}
+	issues[0].TrendingComment = "Needs review"
+	out2 := RenderSlackReport(issues, cfg)
+	if !strings.Contains(out2, ", (Needs review)") {
+		t.Error("non-empty trending comment should appear at end of line")
 	}
 }
 
@@ -675,6 +692,13 @@ func TestRenderSimpleReport(t *testing.T) {
 	}
 	if !strings.Contains(out, "⚪") || !strings.Contains(out, "🪏") || !strings.Contains(out, "A-2") || !strings.Contains(out, "Second task") {
 		t.Errorf("expected second line with emoji, status, type, key, summary; got: %s", out)
+	}
+	withComment := []*IssueData{
+		{Key: "B-1", Summary: "With note", Status: "in progress", Type: "story", StatusEmoji: "▶️", TrendingEmoji: "🟢", TrendingComment: "Follow up"},
+	}
+	out2 := RenderSimpleReport(withComment, cfg)
+	if !strings.Contains(out2, "Follow up") {
+		t.Errorf("expected trending comment in simple output: %q", out2)
 	}
 }
 

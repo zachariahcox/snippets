@@ -17,7 +17,8 @@ func TestExtractIssueData(t *testing.T) {
 			"updated":  "2025-01-02T12:00:00.000Z",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com")
+	computeTrending(data)
 	if data.Key != "PROJ-1" {
 		t.Errorf("Key = %q, want PROJ-1", data.Key)
 	}
@@ -36,9 +37,6 @@ func TestExtractIssueData(t *testing.T) {
 	if data.URL != "https://jira.example.com/browse/PROJ-1" {
 		t.Errorf("URL = %q", data.URL)
 	}
-	if data.ParentKey != "PROJ-1" {
-		t.Errorf("ParentKey = %q, want PROJ-1 (defaults to issue key)", data.ParentKey)
-	}
 }
 
 func TestExtractIssueData_missingFields(t *testing.T) {
@@ -48,7 +46,8 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 			"summary": "Minimal",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com", "PARENT-1", "Parent summary")
+	data := extractIssueData(issue, "https://jira.example.com")
+	computeTrending(data)
 	if data.Key != "PROJ-2" {
 		t.Errorf("Key = %q, want PROJ-2", data.Key)
 	}
@@ -63,9 +62,6 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 	}
 	if data.Priority != "None" {
 		t.Errorf("Priority = %q, want None", data.Priority)
-	}
-	if data.ParentKey != "PARENT-1" || data.ParentSummary != "Parent summary" {
-		t.Errorf("ParentKey=%q ParentSummary=%q", data.ParentKey, data.ParentSummary)
 	}
 }
 
@@ -89,39 +85,21 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		{"Not Started", "not started", "⚪"},
 		{"New", "not started", "⚪"},
 		{"Blocked", "off track", "🔴"},
-		{"At Risk", "at risk", "🟡"},
+		// "At risk" is a trending outcome (e.g. not started + due soon), not a Jira status we branch on.
+		{"At Risk", "INCONCLUSIVE", "❓"},
 	}
 	for _, tt := range tests {
 		issue := copyMap(base)
 		fields := issue["fields"].(map[string]any)
 		fields["status"] = map[string]any{"name": tt.statusName}
-		data := extractIssueData(issue, "https://jira.example.com", "", "")
+		data := extractIssueData(issue, "https://jira.example.com")
+		computeTrending(data)
 		if data.Trending != tt.wantTrending {
 			t.Errorf("status %q: Trending = %q, want %q", tt.statusName, data.Trending, tt.wantTrending)
 		}
 		if data.TrendingEmoji != tt.wantTrendingEmoji {
 			t.Errorf("status %q: Emoji = %q, want %q", tt.statusName, data.TrendingEmoji, tt.wantTrendingEmoji)
 		}
-	}
-}
-
-func TestExtractIssueData_parentURL(t *testing.T) {
-	issue := map[string]any{
-		"key": "PROJ-123-1",
-		"fields": map[string]any{
-			"summary": "Subtask",
-			"status":  map[string]any{"name": "In Progress"},
-		},
-	}
-	data := extractIssueData(issue, "https://jira.example.com", "PROJ-123", "Parent epic")
-	if data.URL != "https://jira.example.com/browse/PROJ-123-1" {
-		t.Errorf("URL = %q", data.URL)
-	}
-	if data.ParentURL != "https://jira.example.com/browse/PROJ-123" {
-		t.Errorf("ParentURL = %q, want parent browse URL", data.ParentURL)
-	}
-	if data.ParentKey != "PROJ-123" || data.ParentSummary != "Parent epic" {
-		t.Errorf("ParentKey=%q ParentSummary=%q", data.ParentKey, data.ParentSummary)
 	}
 }
 
@@ -135,7 +113,7 @@ func TestExtractIssueData_createdUpdated(t *testing.T) {
 			"updated": "2024-07-20T14:30:00.000-0700",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com")
 	if data.Created != "2024-06-15T09:00:00.000Z" {
 		t.Errorf("Created = %q", data.Created)
 	}
@@ -157,7 +135,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	}
 	// Target end comes from custom field; customFields["Target end"] may be unset.
 	// If set in code, we'd need to inject. So test without target end first.
-	data := extractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com")
+	computeTrending(data)
 	if data.TrendingEmoji != "🟢" {
 		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
@@ -172,7 +151,8 @@ func TestExtractIssueData_overdue(t *testing.T) {
 			"updated": "2025-01-02T00:00:00Z",
 		},
 	}
-	dataDone := extractIssueData(doneIssue, "https://jira.example.com", "", "")
+	dataDone := extractIssueData(doneIssue, "https://jira.example.com")
+	computeTrending(dataDone)
 	if dataDone.Trending != "done" || dataDone.TrendingEmoji != "🟣" {
 		t.Errorf("done issue: Trending=%q Emoji=%q, want done/🟣", dataDone.Trending, dataDone.TrendingEmoji)
 	}
@@ -196,7 +176,8 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 			"targetEnd": tomorrow,
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com")
+	computeTrending(data)
 	if data.Trending != "at risk" {
 		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
 	}
@@ -213,7 +194,8 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 			"status":  map[string]any{"name": "  IN PROGRESS  "},
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com", "", "")
+	data := extractIssueData(issue, "https://jira.example.com")
+	computeTrending(data)
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)
 	}

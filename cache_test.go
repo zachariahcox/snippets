@@ -33,7 +33,7 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 		{
 			Key: "P-1", Summary: "One", Status: "done", TrendingEmoji: "🟣",
 			Children: []*IssueData{
-				{Key: "C-1", Summary: "Sub", Status: "in progress", ParentKey: "P-1"},
+				{Key: "C-1", Summary: "Sub", Status: "in progress"},
 			},
 		},
 	}
@@ -48,7 +48,7 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 	if len(p2) != 1 || p2[0].Key != "P-1" || p2[0].Summary != "One" {
 		t.Errorf("parent mismatch: got %+v", p2)
 	}
-	if len(p2[0].Children) != 1 || p2[0].Children[0].Key != "C-1" || p2[0].Children[0].ParentKey != "P-1" {
+	if len(p2[0].Children) != 1 || p2[0].Children[0].Key != "C-1" {
 		t.Errorf("nested children mismatch: got %+v", p2[0].Children)
 	}
 }
