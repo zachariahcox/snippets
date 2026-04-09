@@ -14,7 +14,7 @@ func TestGetStatusPriority(t *testing.T) {
 	if got := GetStatusPriority("new"); got != 6 {
 		t.Errorf("GetStatusPriority(new) = %d, want 10", got)
 	}
-	if got := GetStatusPriority("unknown"); got != 999 {
+	if got := GetStatusPriority("unknown"); got != 7 {
 		t.Errorf("GetStatusPriority(unknown) = %d, want 999", got)
 	}
 }

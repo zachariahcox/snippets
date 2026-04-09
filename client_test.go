@@ -82,11 +82,11 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		{"Resolved", "done", "🟣"},
 		{"Closed", "done", "🟣"},
 		{"In Progress", "on track", "🟢"},
-		{"Not Started", "not started", "⚪"},
+		{"Ready for Work", "not started", "⚪"},
 		{"New", "not started", "⚪"},
 		{"Blocked", "off track", "🔴"},
 		// "At risk" is a trending outcome (e.g. not started + due soon), not a Jira status we branch on.
-		{"At Risk", "INCONCLUSIVE", "❓"},
+		{"At Risk", "unknown", "❓"},
 	}
 	for _, tt := range tests {
 		issue := copyMap(base)
@@ -95,10 +95,10 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		data := extractIssueData(issue, "https://jira.example.com")
 		computeTrending(data)
 		if data.Trending != tt.wantTrending {
-			t.Errorf("status %q: Trending = %q, want %q", tt.statusName, data.Trending, tt.wantTrending)
+			t.Errorf("status %q: Trending: Actual = %q, Expected %q", tt.statusName, data.Trending, tt.wantTrending)
 		}
 		if data.TrendingEmoji != tt.wantTrendingEmoji {
-			t.Errorf("status %q: Emoji = %q, want %q", tt.statusName, data.TrendingEmoji, tt.wantTrendingEmoji)
+			t.Errorf("status %q: Emoji: Actual = %q, Expected %q", tt.statusName, data.TrendingEmoji, tt.wantTrendingEmoji)
 		}
 	}
 }
@@ -174,7 +174,7 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 		"key": "P-1",
 		"fields": map[string]any{
 			"summary":   "Due soon task",
-			"status":    map[string]any{"name": "Not Started"},
+			"status":    map[string]any{"name": "Ready for Work"},
 			"created":   "2025-01-01T00:00:00Z",
 			"updated":   "2025-01-02T00:00:00Z",
 			"targetEnd": tomorrow,

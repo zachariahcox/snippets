@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ var statusEmojis = map[string]string{
 	"ready for work": "🪏",
 	"vetting":        "🤔",
 	"new":            "✨",
+	"unknown":        "❓",
 }
 
 // statusOrder defines the sort priority for statuses
@@ -60,6 +62,7 @@ var statusOrder = []string{
 	"ready for work",
 	"vetting",
 	"new",
+	"unknown",
 }
 
 // Custom fields to resolve by name
@@ -176,7 +179,7 @@ func computeTrending(issue *IssueData) {
 	case "in progress":
 		trending = "on track"
 	default:
-		trending = "INCONCLUSIVE"
+		trending = "" // inconclusive
 	}
 
 	// past target end -> off track (unless already done)
@@ -243,12 +246,12 @@ func extractIssueData(issue map[string]any, serverURL string) *IssueData {
 
 	// Get status
 	statusObj := getMap(fields, "status")
-	statusRaw := getString(statusObj, "name", "Unknown")
+	statusRaw := getString(statusObj, "name", "unknown")
 	statusNormalized := strings.ToLower(strings.TrimSpace(statusRaw))
-	statusEmoji := "❓"
-	if value, ok := statusEmojis[statusNormalized]; ok {
-		statusEmoji = value
+	if !slices.Contains(statusOrder, statusNormalized) {
+		statusNormalized = "unknown" // only known statuses are in statusOrder
 	}
+	statusEmoji := statusEmojis[statusNormalized]
 
 	// Get assignee
 	assigneeObj := getMap(fields, "assignee")
