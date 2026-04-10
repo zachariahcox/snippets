@@ -37,8 +37,9 @@ func CacheDir() (string, error) {
 	return cacheDirFn()
 }
 
-// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted issue keys).
-func CacheKey(jql string, keys []string) string {
+// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted issue keys)
+// and whether child issues were loaded (must match FetchReportIssues behavior).
+func CacheKey(jql string, keys []string, includeChildren bool) string {
 	var parts []string
 	if jql != "" {
 		parts = []string{"jql:", jql}
@@ -47,6 +48,11 @@ func CacheKey(jql string, keys []string) string {
 		copy(k, keys)
 		sort.Strings(k)
 		parts = []string{"keys:", strings.Join(k, ",")}
+	}
+	if includeChildren {
+		parts = append(parts, "|children:1")
+	} else {
+		parts = append(parts, "|children:0")
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "")))
 	return hex.EncodeToString(h[:])

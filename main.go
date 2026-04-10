@@ -2,7 +2,7 @@
 //
 // Features:
 //   - Fetch issues by JQL query or direct issue keys.
-//   - Get subtasks and/or linked issues for each parent.
+//   - Optional --children: load linked/child issues and fold them into trending (default: off).
 //   - Derive status from Jira's native status field with emoji decoration.
 //   - Include target date and last update timestamps.
 //   - Filter issues by a minimum last-update date.
@@ -141,17 +141,18 @@ var (
 
 // ReportConfig holds options for report generation
 type ReportConfig struct {
-	Title          string
-	UpdatedAfter   *time.Time
-	NoCommentAfter *time.Time
-	OutputFile     string
-	JSONOutput     bool
-	CSVOutput      bool
-	SlackOutput    bool
-	URLOutput      bool
-	SimpleOutput   bool
-	SummaryOutput  bool
-	JQLQuery       string
+	Title           string
+	UpdatedAfter    *time.Time
+	NoCommentAfter  *time.Time
+	OutputFile      string
+	JSONOutput      bool
+	CSVOutput       bool
+	SlackOutput     bool
+	URLOutput       bool
+	SimpleOutput    bool
+	SummaryOutput   bool
+	JQLQuery        string
+	IncludeChildren bool // fetch child issues and roll them into computeTrending
 }
 
 func (c *ReportConfig) String() string {
@@ -166,9 +167,10 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t",
+	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t children=%t",
 		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
-		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput, c.SimpleOutput, c.SummaryOutput)
+		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput,
+		c.SimpleOutput, c.SummaryOutput, c.IncludeChildren)
 }
 
 // ParseSince parses --since: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days).
@@ -254,9 +256,12 @@ func DaysFromNow(dateStr string) (int, bool) {
 // returns ErrCacheMiss. On cache miss with client != nil it fetches from Jira, writes the
 // cache, and returns the result.
 func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("cfg is nil")
+	}
 	logInfo("Fetching issues for configuration: %v", cfg)
 
-	key := CacheKey(cfg.JQLQuery, issueKeys)
+	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.IncludeChildren)
 	if err := EnsureCacheDir(); err != nil {
 		logWarning("Cache dir unavailable: %v", err)
 	} else {
@@ -303,8 +308,9 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 		parentIssues = issues
 	}
 
-	// load children
-	client.loadChildren(parentIssues)
+	if cfg.IncludeChildren {
+		client.loadChildren(parentIssues)
+	}
 
 	// load comments
 	client.loadComments(parentIssues)
@@ -346,6 +352,7 @@ func main() {
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
 	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
 	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
+	children := flag.Bool("children", false, "Fetch child/linked issues and use them when computing trending")
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	jiraConcurrency := flag.Int("jira-concurrency", 0, "Max parallel Jira API requests (0=use JIRA_CONCURRENCY env or 8)")
@@ -479,17 +486,18 @@ Examples:
 	}
 
 	cfg := &ReportConfig{
-		Title:          *title,
-		UpdatedAfter:   since,
-		NoCommentAfter: noCommentAfter,
-		OutputFile:     *outputFile,
-		JSONOutput:     *jsonOutput,
-		CSVOutput:      *csvOutput,
-		SlackOutput:    *slackOutput,
-		URLOutput:      *urlOutput,
-		SimpleOutput:   *simpleOutput,
-		SummaryOutput:  *summaryOutput,
-		JQLQuery:       *jqlQuery,
+		Title:           *title,
+		UpdatedAfter:    since,
+		NoCommentAfter:  noCommentAfter,
+		OutputFile:      *outputFile,
+		JSONOutput:      *jsonOutput,
+		CSVOutput:       *csvOutput,
+		SlackOutput:     *slackOutput,
+		URLOutput:       *urlOutput,
+		SimpleOutput:    *simpleOutput,
+		SummaryOutput:   *summaryOutput,
+		JQLQuery:        *jqlQuery,
+		IncludeChildren: *children,
 	}
 
 	// Try cache first when not in individual mode (skip Jira entirely on hit)
