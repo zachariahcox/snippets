@@ -12,10 +12,8 @@ func testJiraClientForExtract(cfg *ReportConfig, nameToID map[string]string) *Ji
 	}
 	c := &JiraClient{Server: "https://jira.example.com"}
 	c.prepareFieldResolution(cfg)
-	if nameToID != nil {
-		for k, v := range nameToID {
-			c.customFieldNameToID[k] = v
-		}
+	for k, v := range nameToID {
+		c.customFieldNameToID[k] = v
 	}
 	return c
 }
@@ -58,11 +56,11 @@ func TestExtractIssueData_nativeDueDate(t *testing.T) {
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
-			"summary":  "Has due",
-			"status":   map[string]any{"name": "In Progress"},
-			"duedate":  "2025-06-01",
-			"created":  "2025-01-01T00:00:00Z",
-			"updated":  "2025-01-02T00:00:00Z",
+			"summary": "Has due",
+			"status":  map[string]any{"name": "In Progress"},
+			"duedate": "2025-06-01",
+			"created": "2025-01-01T00:00:00Z",
+			"updated": "2025-01-02T00:00:00Z",
 		},
 	}
 	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
@@ -174,11 +172,11 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	resolvedIssue := map[string]any{
 		"key": "P-2",
 		"fields": map[string]any{
-			"summary":   "Shipped task",
-			"status":    map[string]any{"name": "Resolved"},
-			"created":   "2025-01-01T00:00:00Z",
-			"updated":   "2025-01-02T00:00:00Z",
-			"dueCf":     "2020-01-01",
+			"summary": "Shipped task",
+			"status":  map[string]any{"name": "Resolved"},
+			"created": "2025-01-01T00:00:00Z",
+			"updated": "2025-01-02T00:00:00Z",
+			"dueCf":   "2020-01-01",
 		},
 	}
 	cfg := &ReportConfig{DueDateFieldName: dueName}
@@ -197,11 +195,11 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
-			"summary":   "Due soon task",
-			"status":    map[string]any{"name": "Ready for Work"},
-			"created":   "2025-01-01T00:00:00Z",
-			"updated":   "2025-01-02T00:00:00Z",
-			"dueCf":     tomorrow,
+			"summary": "Due soon task",
+			"status":  map[string]any{"name": "Ready for Work"},
+			"created": "2025-01-01T00:00:00Z",
+			"updated": "2025-01-02T00:00:00Z",
+			"dueCf":   tomorrow,
 		},
 	}
 	cfg := &ReportConfig{DueDateFieldName: dueName}
@@ -221,10 +219,10 @@ func TestExtractIssueData_trendingFromJiraField(t *testing.T) {
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
-			"summary":        "X",
-			"status":         map[string]any{"name": "In Progress"},
-			"created":        "2025-01-01T00:00:00Z",
-			"updated":        "2025-01-02T00:00:00Z",
+			"summary":         "X",
+			"status":          map[string]any{"name": "In Progress"},
+			"created":         "2025-01-01T00:00:00Z",
+			"updated":         "2025-01-02T00:00:00Z",
 			"customfield_999": map[string]any{"value": "Off track"},
 		},
 	}

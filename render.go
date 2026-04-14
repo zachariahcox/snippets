@@ -277,7 +277,11 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 		days, ok := DaysFromNow(issue.Due)
 		dueStr := "?"
 		if ok {
-			dueStr = fmt.Sprintf("due in %d days", days)
+			if issue.Trending == "done" {
+				dueStr = "done"
+			} else {
+				dueStr = fmt.Sprintf("due in %d days", days)
+			}
 		} else {
 			dueStr = "(no due date)"
 		}

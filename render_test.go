@@ -702,6 +702,50 @@ func TestRenderSimpleReport(t *testing.T) {
 	}
 }
 
+// RenderSimpleReport due column: DaysFromNow + trending "done" shows "done", else "due in N days", else "(no due date)".
+func TestRenderSimpleReport_dueColumn(t *testing.T) {
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+	farFuture := "2099-06-15"
+	cfg := &ReportConfig{}
+
+	noDue := []*IssueData{{
+		Key: "N-1", Summary: "No due", Status: "in progress", Type: "story",
+		StatusEmoji: "🚀", TrendingEmoji: "🟢", Trending: "on track", Due: "",
+	}}
+	out := RenderSimpleReport(noDue, cfg)
+	if !strings.Contains(out, "(no due date)") {
+		t.Errorf("empty Due: want substring '(no due date)', got:\n%s", out)
+	}
+
+	doneStillDue := []*IssueData{{
+		Key: "D-1", Summary: "Shipped", Status: "resolved", Type: "story",
+		StatusEmoji: "🎉", TrendingEmoji: "🟣", Trending: "done", Due: farFuture,
+	}}
+	out = RenderSimpleReport(doneStillDue, cfg)
+	if !strings.Contains(out, "D-1") {
+		t.Errorf("expected key D-1 in output:\n%s", out)
+	}
+	hasDoneWord := false
+	for _, w := range strings.Fields(strings.TrimSpace(out)) {
+		if w == "done" {
+			hasDoneWord = true
+			break
+		}
+	}
+	if !hasDoneWord {
+		t.Errorf("Trending done with parseable Due: want word 'done' in simple row, got:\n%s", out)
+	}
+
+	activeTomorrow := []*IssueData{{
+		Key: "A-1", Summary: "Active", Status: "in progress", Type: "story",
+		StatusEmoji: "🚀", TrendingEmoji: "🟢", Trending: "on track", Due: tomorrow,
+	}}
+	out = RenderSimpleReport(activeTomorrow, cfg)
+	if !strings.Contains(out, "due in 1 days") {
+		t.Errorf("active issue due tomorrow: want 'due in 1 days' in output, got:\n%s", out)
+	}
+}
+
 func TestServerBaseFromIssueURL(t *testing.T) {
 	if got := serverBaseFromIssueURL("https://jira.example.com/browse/ABC-1079"); got != "https://jira.example.com" {
 		t.Errorf("serverBaseFromIssueURL = %q, want https://jira.example.com", got)
