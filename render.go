@@ -92,7 +92,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 	result = append(result, fmt.Sprintf("* row count: %d", len(issues)))
 
 	// Render header row (type between trending and status); trending comment last
-	result = append(result, "\n| trending | type | status | issue | assignee | target date | last update | comment |")
+	result = append(result, "\n| trending | type | status | issue | assignee | due date | last update | comment |")
 	result = append(result, "|---|---|---|---|:--|:--|:--|:--|")
 
 	// Render rows
@@ -100,7 +100,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 		// Format cells
 		issueLink := fmt.Sprintf("[%s](%s)", escapeMarkdownInline(issue.Summary), issue.URL)
 		trendingWithEmoji := fmt.Sprintf("%s %s", issue.TrendingEmoji, issue.Trending)
-		targetEnd := FormatDate(issue.TargetEnd)
+		dueDate := FormatDate(issue.Due)
 		timestampLink := FormatTimestampWithLink(issue.Comment.Created, issue.Comment.Url, false)
 		typeOrStatus := issue.Type
 		if typeOrStatus == "" || strings.ToLower(typeOrStatus) == "unknown" {
@@ -114,7 +114,7 @@ func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
 
 		// Render row
 		row := fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s |",
-			trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, targetEnd, timestampLink, trendingCommentCell)
+			trendingWithEmoji, typeOrStatus, issue.Status, issueLink, issue.Assignee, dueDate, timestampLink, trendingCommentCell)
 		result = append(result, row)
 	}
 
@@ -226,7 +226,7 @@ func RenderCSVReport(issues []*IssueData, cfg *ReportConfig) string {
 			issue.Priority,
 			issue.Created,
 			issue.Updated,
-			FormatDate(issue.TargetEnd),
+			FormatDate(issue.Due),
 			issue.Trending,
 			issue.TrendingEmoji,
 			issue.Type,
@@ -249,7 +249,7 @@ func RenderSlackReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	var result []string
 	for i, issue := range issues {
-		line := fmt.Sprintf("%d. %s [%s](%s), (due %s)", i+1, issue.TrendingEmoji, issue.Summary, issue.URL, FormatDate(issue.TargetEnd))
+		line := fmt.Sprintf("%d. %s [%s](%s), (due %s)", i+1, issue.TrendingEmoji, issue.Summary, issue.URL, FormatDate(issue.Due))
 		if issue.Comment.Url != "" {
 			line += fmt.Sprintf(" ([last update](%s))", issue.Comment.Url)
 		}
@@ -274,12 +274,12 @@ func RenderSimpleReport(issues []*IssueData, cfg *ReportConfig) string {
 	// column headers: trending, status, due, type, key, summary, trending comment
 	format := "%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
 	for _, issue := range issues {
-		days, ok := DaysFromNow(issue.TargetEnd)
+		days, ok := DaysFromNow(issue.Due)
 		dueStr := "?"
 		if ok {
 			dueStr = fmt.Sprintf("due in %d days", days)
 		} else {
-			dueStr = "(no target date)"
+			dueStr = "(no due date)"
 		}
 		fmt.Fprintf(tw, format,
 			issue.TrendingEmoji,
@@ -455,8 +455,8 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 		}
 
 		// By target end
-		ti := filteredIssues[i].TargetEnd
-		tj := filteredIssues[j].TargetEnd
+		ti := filteredIssues[i].Due
+		tj := filteredIssues[j].Due
 		if ti == "" {
 			ti = "9999-99-99"
 		}

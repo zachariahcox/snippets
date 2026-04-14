@@ -37,23 +37,27 @@ func CacheDir() (string, error) {
 	return cacheDirFn()
 }
 
-// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted issue keys)
-// and whether child issues were loaded (must match FetchReportIssues behavior).
-func CacheKey(jql string, keys []string, includeChildren bool) string {
+// CacheKey returns a deterministic filename-safe key for the query (JQL or sorted issue keys),
+// whether child issues were loaded, and due-date / trending field configuration (must match FetchReportIssues).
+func CacheKey(cfg *ReportConfig, issueKeys []string) string {
+	if cfg == nil {
+		cfg = &ReportConfig{}
+	}
 	var parts []string
-	if jql != "" {
-		parts = []string{"jql:", jql}
+	if cfg.JQLQuery != "" {
+		parts = []string{"jql:", cfg.JQLQuery}
 	} else {
-		k := make([]string, len(keys))
-		copy(k, keys)
+		k := make([]string, len(issueKeys))
+		copy(k, issueKeys)
 		sort.Strings(k)
 		parts = []string{"keys:", strings.Join(k, ",")}
 	}
-	if includeChildren {
+	if cfg.IncludeChildren {
 		parts = append(parts, "|children:1")
 	} else {
 		parts = append(parts, "|children:0")
 	}
+	parts = append(parts, "|dueField:", strings.TrimSpace(cfg.DueDateFieldName), "|trendField:", strings.TrimSpace(cfg.TrendingStatusFieldName))
 	h := sha256.Sum256([]byte(strings.Join(parts, "")))
 	return hex.EncodeToString(h[:])
 }

@@ -139,7 +139,7 @@ func TestRenderMarkdownReport(t *testing.T) {
 			Status:        "resolved",
 			Type:          "story",
 			Assignee:      "Alice",
-			TargetEnd:     "2025-01-01",
+			Due:           "2025-01-01",
 			Updated:       "2025-01-02",
 			TrendingEmoji: "🟣",
 			Trending:      "done",
@@ -237,7 +237,7 @@ func TestRenderMarkdownReport_subtaskRow(t *testing.T) {
 			Status:          "in progress",
 			Type:            "subtask",
 			Assignee:        "Bob",
-			TargetEnd:       "2025-02-01",
+			Due:             "2025-02-01",
 			Updated:         "2025-01-15",
 			TrendingEmoji:   "🟢",
 			Trending:        "in progress",
@@ -382,7 +382,7 @@ func TestRenderCSVReport(t *testing.T) {
 			Summary:       "First issue",
 			Status:        "in progress",
 			Assignee:      "Alice",
-			TargetEnd:     "2025-02-01",
+			Due:           "2025-02-01",
 			Updated:       "2025-01-15",
 			TrendingEmoji: "🟢",
 			Trending:      "in progress",
@@ -454,14 +454,14 @@ func TestRenderSlackReport(t *testing.T) {
 			Summary:       "First issue",
 			TrendingEmoji: "🟢",
 			Trending:      "in progress",
-			TargetEnd:     "2025-02-01",
+			Due:           "2025-02-01",
 			Comment:       IssueComment{Url: "https://jira/comment/1", Created: "2025-01-15"},
 		},
 		{
 			Key:           "A-2",
 			URL:           "https://jira/browse/A-2",
 			Summary:       "Second issue",
-			TargetEnd:     "2025-02-02",
+			Due:           "2025-02-02",
 			TrendingEmoji: "🟣",
 			Trending:      "done",
 		},
@@ -498,7 +498,7 @@ func TestSplitJQLOrderBy_lastOrderByWins(t *testing.T) {
 }
 
 func TestSplitJQLOrderBy_newlineBeforeOrderBy(t *testing.T) {
-	jql := "project = SCM\nand status = open\norder by \"Target end\" ASC"
+	jql := "project = ABC\nand status = open\norder by updated ASC"
 	main, ob := splitJQLOrderBy(jql)
 	if main == "" || ob == "" {
 		t.Fatalf("split failed: main=%q ob=%q", main, ob)
@@ -532,21 +532,21 @@ func TestMergeURLReportOrderBy(t *testing.T) {
 
 func TestRenderURLReport(t *testing.T) {
 	issues := []*IssueData{
-		{Key: "SCM-1079", URL: "https://jirasw.nvidia.com/browse/SCM-1079"},
-		{Key: "SCM-3791", URL: "https://jirasw.nvidia.com/browse/SCM-3791"},
+		{Key: "ABC-1079", URL: "https://jira.example.com/browse/ABC-1079"},
+		{Key: "ABC-3791", URL: "https://jira.example.com/browse/ABC-3791"},
 	}
 	cfg := &ReportConfig{}
 	out := RenderURLReport(issues, cfg)
 	if out == "" {
 		t.Fatal("RenderURLReport returned empty string")
 	}
-	if !strings.HasPrefix(out, "https://jirasw.nvidia.com/issues/") {
+	if !strings.HasPrefix(out, "https://jira.example.com/issues/") {
 		t.Errorf("expected base URL from issue, got %s", out)
 	}
 	if !strings.Contains(out, "jql=") {
 		t.Error("expected jql param in URL")
 	}
-	if !strings.Contains(out, "SCM-1079") || !strings.Contains(out, "SCM-3791") {
+	if !strings.Contains(out, "ABC-1079") || !strings.Contains(out, "ABC-3791") {
 		t.Error("expected issue keys in URL")
 	}
 	if !strings.Contains(out, "order+by+assignee+ASC") {
@@ -580,7 +580,7 @@ func TestRenderURLReport_jqlExistingOrderByAssigneeNotDuplicated(t *testing.T) {
 }
 
 func TestRenderURLReport_reusesJQL(t *testing.T) {
-	issues := []*IssueData{{Key: "SCM-1079", URL: "https://jirasw.nvidia.com/browse/SCM-1079"}}
+	issues := []*IssueData{{Key: "ABC-1079", URL: "https://jira.example.com/browse/ABC-1079"}}
 	cfg := &ReportConfig{JQLQuery: "project = FOO AND status = Open"}
 	out := RenderURLReport(issues, cfg)
 	if !strings.Contains(out, "project+%3D+FOO") && !strings.Contains(out, "project=FOO") {
@@ -703,8 +703,8 @@ func TestRenderSimpleReport(t *testing.T) {
 }
 
 func TestServerBaseFromIssueURL(t *testing.T) {
-	if got := serverBaseFromIssueURL("https://jirasw.nvidia.com/browse/SCM-1079"); got != "https://jirasw.nvidia.com" {
-		t.Errorf("serverBaseFromIssueURL = %q, want https://jirasw.nvidia.com", got)
+	if got := serverBaseFromIssueURL("https://jira.example.com/browse/ABC-1079"); got != "https://jira.example.com" {
+		t.Errorf("serverBaseFromIssueURL = %q, want https://jira.example.com", got)
 	}
 	if got := serverBaseFromIssueURL(""); got != "" {
 		t.Errorf("serverBaseFromIssueURL empty = %q", got)

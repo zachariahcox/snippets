@@ -4,7 +4,7 @@
 //   - Fetch issues by JQL query or direct issue keys.
 //   - Optional --children: load linked/child issues and fold them into trending (default: off).
 //   - Derive status from Jira's native status field with emoji decoration.
-//   - Include target date and last update timestamps.
+//   - Include due date and last update timestamps.
 //   - Filter issues by a minimum last-update date.
 //   - Emit a combined report for multiple issues or individual reports per issue.
 //   - Output to stdout or append/write to a specified markdown file.
@@ -15,12 +15,11 @@
 //	Environment variables (required):
 //	  JIRA_SERVER      - Jira server URL (e.g., https://mycompany.atlassian.net or https://jira.company.com)
 //	  JIRA_API_TOKEN   - Your API token or Personal Access Token (PAT)
-//
-//	For Jira Cloud:
 //	  JIRA_EMAIL       - Your Atlassian account email (required for Cloud)
-//
-//	For Jira Server/Data Center:
-//	  JIRA_EMAIL       - Optional (your username, not email)
+//	Optional:
+//	  JIRA_CONCURRENCY - Max parallel API calls (default 8; overridden by --jira-concurrency)
+//	  JIRA_DUE_DATE_FIELD - Custom field display name for due/due date (empty = Jira native Due Date). Overridden by --due-date-field.
+//	  JIRA_TRENDING_STATUS_FIELD - Custom field display name; when set, a non-empty value overrides computed trending for that issue.
 //
 // Usage:
 //
@@ -64,6 +63,62 @@ func resolveJiraConcurrency(flagVal int, env string) int {
 
 // credsFileName is the name of the optional shell script that can export JIRA_* vars.
 const credsFileName = ".snippets/creds.sh"
+
+// loadJiraCustomFieldNames returns JIRA_DUE_DATE_FIELD and JIRA_TRENDING_STATUS_FIELD from the environment,
+// then fills missing values from ~/.snippets/creds.sh when that file exists (same pattern as loadJiraCreds).
+// This runs before cache lookup so cache keys match runs that use creds-only field configuration.
+func loadJiraCustomFieldNames(credsFilePath string) (dueDateField, trendingStatusField string) {
+	dueDateField = strings.TrimSpace(os.Getenv("JIRA_DUE_DATE_FIELD"))
+	trendingStatusField = strings.TrimSpace(os.Getenv("JIRA_TRENDING_STATUS_FIELD"))
+
+	var credsPath string
+	if credsFilePath != "" {
+		credsPath = credsFilePath
+	} else {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			credsPath = ""
+		} else {
+			credsPath = filepath.Join(home, credsFileName)
+		}
+	}
+	if credsPath == "" {
+		return dueDateField, trendingStatusField
+	}
+	if _, statErr := os.Stat(credsPath); statErr != nil {
+		return dueDateField, trendingStatusField
+	}
+	script := fmt.Sprintf(`. %q 2>/dev/null; echo "JIRA_DUE_DATE_FIELD=$JIRA_DUE_DATE_FIELD"; echo "JIRA_TRENDING_STATUS_FIELD=$JIRA_TRENDING_STATUS_FIELD"`, credsPath)
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = os.Environ()
+	out, cmdErr := cmd.Output()
+	if cmdErr != nil {
+		return dueDateField, trendingStatusField
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		i := strings.Index(line, "=")
+		if i <= 0 {
+			continue
+		}
+		key, val := line[:i], line[i+1:]
+		val = strings.Trim(val, "\"")
+		switch key {
+		case "JIRA_DUE_DATE_FIELD":
+			if dueDateField == "" && val != "" {
+				dueDateField = strings.TrimSpace(val)
+			}
+		case "JIRA_TRENDING_STATUS_FIELD":
+			if trendingStatusField == "" && val != "" {
+				trendingStatusField = strings.TrimSpace(val)
+			}
+		}
+	}
+	return dueDateField, trendingStatusField
+}
 
 // loadJiraCreds returns JIRA_SERVER, JIRA_API_TOKEN, and JIRA_EMAIL from the environment
 // and optionally from a creds shell script (sourced in a subprocess). Env vars take precedence.
@@ -153,6 +208,13 @@ type ReportConfig struct {
 	SummaryOutput   bool
 	JQLQuery        string
 	IncludeChildren bool // fetch child issues and roll them into computeTrending
+
+	// DueDateFieldName is the Jira custom field display name for due/due dates; empty means use the native Due Date (duedate).
+	DueDateFieldName string
+	// TrendingStatusFieldName is the Jira custom field display name for trending; empty means trending is computed from status/dates.
+	TrendingStatusFieldName string
+	// CustomFieldNameToID maps custom field display names to REST field IDs after the client resolves them (filled during fetch).
+	CustomFieldNameToID map[string]string
 }
 
 func (c *ReportConfig) String() string {
@@ -167,10 +229,11 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t children=%t",
+	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t children=%t dueField=%q trendField=%q fieldIDs=%d",
 		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
 		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput,
-		c.SimpleOutput, c.SummaryOutput, c.IncludeChildren)
+		c.SimpleOutput, c.SummaryOutput, c.IncludeChildren,
+		c.DueDateFieldName, c.TrendingStatusFieldName, len(c.CustomFieldNameToID))
 }
 
 // ParseSince parses --since: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days).
@@ -261,7 +324,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	}
 	logInfo("Fetching issues for configuration: %v", cfg)
 
-	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.IncludeChildren)
+	key := CacheKey(cfg, issueKeys)
 	if err := EnsureCacheDir(); err != nil {
 		logWarning("Cache dir unavailable: %v", err)
 	} else {
@@ -280,6 +343,8 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	if client == nil {
 		return nil, ErrCacheMiss
 	}
+
+	client.prepareFieldResolution(cfg)
 
 	// Prune only when we're about to fetch (and possibly write); avoids slow ReadDir+Stat on cache-hit path.
 	_ = PruneCache(cacheTTL)
@@ -356,6 +421,7 @@ func main() {
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	jiraConcurrency := flag.Int("jira-concurrency", 0, "Max parallel Jira API requests (0=use JIRA_CONCURRENCY env or 8)")
+	dueDateFieldFlag := flag.String("due-date-field", "", "Jira custom field display name for due/due date (overrides JIRA_DUE_DATE_FIELD; empty = native Due Date)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: snippets [options] <issue_keys...>
@@ -371,6 +437,8 @@ Environment variables:
   JIRA_API_TOKEN  - API token or Personal Access Token (required)
   JIRA_EMAIL      - Your email/username (required for Cloud, optional for Server)
   JIRA_CONCURRENCY - Optional max parallel API calls (default 8; overridden by --jira-concurrency)
+  JIRA_DUE_DATE_FIELD - Optional custom field display name for due date (empty = native Due Date)
+  JIRA_TRENDING_STATUS_FIELD - Optional custom field; when set, non-empty values override computed trending
 
 Examples:
   snippets PROJECT-123 PROJECT-456
@@ -485,19 +553,28 @@ Examples:
 		*title = "Snippets!"
 	}
 
+	// resolve custom field names
+	dueFromEnv, trendFromEnv := loadJiraCustomFieldNames("")
+	dueDateFieldName := strings.TrimSpace(*dueDateFieldFlag)
+	if dueDateFieldName == "" {
+		dueDateFieldName = dueFromEnv
+	}
+
 	cfg := &ReportConfig{
-		Title:           *title,
-		UpdatedAfter:    since,
-		NoCommentAfter:  noCommentAfter,
-		OutputFile:      *outputFile,
-		JSONOutput:      *jsonOutput,
-		CSVOutput:       *csvOutput,
-		SlackOutput:     *slackOutput,
-		URLOutput:       *urlOutput,
-		SimpleOutput:    *simpleOutput,
-		SummaryOutput:   *summaryOutput,
-		JQLQuery:        *jqlQuery,
-		IncludeChildren: *children,
+		Title:                   *title,
+		UpdatedAfter:            since,
+		NoCommentAfter:          noCommentAfter,
+		OutputFile:              *outputFile,
+		JSONOutput:              *jsonOutput,
+		CSVOutput:               *csvOutput,
+		SlackOutput:             *slackOutput,
+		URLOutput:               *urlOutput,
+		SimpleOutput:            *simpleOutput,
+		SummaryOutput:           *summaryOutput,
+		JQLQuery:                *jqlQuery,
+		IncludeChildren:         *children,
+		DueDateFieldName:        dueDateFieldName,
+		TrendingStatusFieldName: trendFromEnv,
 	}
 
 	// Try cache first when not in individual mode (skip Jira entirely on hit)

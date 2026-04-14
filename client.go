@@ -30,6 +30,12 @@ type JiraClient struct {
 
 	muCustomFields     sync.Mutex
 	customFieldsLoaded bool
+
+	// Field resolution (rebound per FetchReportIssues via prepareFieldResolution).
+	fieldCfg                *ReportConfig
+	dueDateFieldName        string // custom field display name; empty => use native duedate only
+	trendingStatusFieldName string
+	customFieldNameToID     map[string]string // display name -> API id
 }
 
 // Status categories mapped to emojis
@@ -65,11 +71,6 @@ var statusOrder = []string{
 	"unknown",
 }
 
-// Custom fields to resolve by name
-var customFields = map[string]string{
-	"Target end": "",
-}
-
 // IssueData represents extracted issue data
 type IssueComment struct {
 	Url     string `json:"url"`
@@ -85,7 +86,7 @@ type IssueData struct {
 	Priority        string       `json:"priority"`
 	Created         string       `json:"created"`
 	Updated         string       `json:"updated"`
-	TargetEnd       string       `json:"target_end"`
+	Due             string       `json:"target_end"`
 	Trending        string       `json:"trending"`
 	TrendingEmoji   string       `json:"Emoji"` // cache compat: historical key name
 	TrendingComment string       `json:"trending_comment"`
@@ -130,6 +131,30 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 	return client, nil
 }
 
+// prepareFieldResolution binds cfg's custom field display names for this fetch and resets resolution state.
+func (c *JiraClient) prepareFieldResolution(cfg *ReportConfig) {
+	if c == nil || cfg == nil {
+		return
+	}
+	c.fieldCfg = cfg
+	c.dueDateFieldName = strings.TrimSpace(cfg.DueDateFieldName)
+	c.trendingStatusFieldName = strings.TrimSpace(cfg.TrendingStatusFieldName)
+	c.customFieldNameToID = make(map[string]string)
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, exists := c.customFieldNameToID[name]; exists {
+			return
+		}
+		c.customFieldNameToID[name] = ""
+	}
+	add(c.dueDateFieldName)
+	add(c.trendingStatusFieldName)
+	c.customFieldsLoaded = false
+}
+
 func (c *JiraClient) concurrencyCap() int {
 	if c.MaxConcurrent < 1 {
 		return defaultJiraConcurrency
@@ -144,8 +169,17 @@ func (c *JiraClient) ensureCustomFieldsLoaded() {
 	if c.customFieldsLoaded {
 		return
 	}
-	if err := c.loadCustomFields(customFields); err != nil {
-		logWarning("Could not load custom fields: %v", err)
+	if len(c.customFieldNameToID) > 0 {
+		if err := c.loadCustomFields(c.customFieldNameToID); err != nil {
+			logWarning("Could not load custom fields: %v", err)
+		}
+	}
+	if c.fieldCfg != nil {
+		out := make(map[string]string, len(c.customFieldNameToID))
+		for k, v := range c.customFieldNameToID {
+			out[k] = v
+		}
+		c.fieldCfg.CustomFieldNameToID = out
 	}
 	c.customFieldsLoaded = true
 }
@@ -172,7 +206,7 @@ func computeTrending(issue *IssueData) {
 		trending = "off track"
 	case "not started", "new", "vetting", "ready for work":
 		trending = "not started"
-		if isDueWithinDays(issue.TargetEnd, 30) {
+		if isDueWithinDays(issue.Due, 30) {
 			trending = "at risk"
 			issue.TrendingComment = fmt.Sprintf("due within %d days but not started.", 30)
 		}
@@ -183,7 +217,7 @@ func computeTrending(issue *IssueData) {
 	}
 
 	// past target end -> off track (unless already done)
-	if trending != "done" && isStale(issue.TargetEnd) {
+	if trending != "done" && isStale(issue.Due) {
 		trending = "off track"
 	}
 
@@ -233,9 +267,53 @@ func computeTrending(issue *IssueData) {
 	issue.TrendingEmoji = trendingEmoji
 }
 
+// jiraFieldStringValue returns a display string for a Jira issue fields value (string, option object, multi-select, etc.).
+func jiraFieldStringValue(fields map[string]any, fieldID string) string {
+	if fieldID == "" || fields == nil {
+		return ""
+	}
+	v, ok := fields[fieldID]
+	if !ok || v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case map[string]any:
+		if s := getString(x, "value", ""); s != "" {
+			return strings.TrimSpace(s)
+		}
+		if s := getString(x, "name", ""); s != "" {
+			return strings.TrimSpace(s)
+		}
+		return strings.TrimSpace(getString(x, "displayName", ""))
+	case []any:
+		var parts []string
+		for _, el := range x {
+			switch e := el.(type) {
+			case map[string]any:
+				p := getString(e, "value", "")
+				if p == "" {
+					p = getString(e, "name", "")
+				}
+				if p != "" {
+					parts = append(parts, p)
+				}
+			case string:
+				if strings.TrimSpace(e) != "" {
+					parts = append(parts, strings.TrimSpace(e))
+				}
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, ", "))
+	default:
+		return strings.TrimSpace(fmt.Sprint(x))
+	}
+}
+
 // extractIssueData extracts relevant data from a Jira issue API response.
 // Parent/child relationships are represented only via IssueData.Children after loadChildren.
-func extractIssueData(issue map[string]any, serverURL string) *IssueData {
+func (c *JiraClient) extractIssueData(issue map[string]any) *IssueData {
 	fields := getMap(issue, "fields")
 	issueKey := getString(issue, "key", "")
 
@@ -265,27 +343,56 @@ func extractIssueData(issue map[string]any, serverURL string) *IssueData {
 	created := getString(fields, "created", "")
 	updated := getString(fields, "updated", "")
 
-	// Get target end from custom field
-	targetEnd := getString(fields, customFields["Target end"], "")
+	// Get due date via custom field
+	due := ""
+	if c != nil && c.dueDateFieldName != "" && c.customFieldNameToID != nil {
+		if id := c.customFieldNameToID[c.dueDateFieldName]; id != "" {
+			due = jiraFieldStringValue(fields, id)
+		}
+	}
+	if due == "" {
+		due = getString(fields, "duedate", "")
+	}
+
+	trendingStr := ""
+	trendingEmo := ""
+	if c != nil && c.trendingStatusFieldName != "" && c.customFieldNameToID != nil {
+		if id := c.customFieldNameToID[c.trendingStatusFieldName]; id != "" {
+			raw := jiraFieldStringValue(fields, id)
+			if raw != "" {
+				trendingStr = strings.ToLower(strings.TrimSpace(raw))
+				if e, ok := trendingEmojis[trendingStr]; ok {
+					trendingEmo = e
+				} else {
+					trendingEmo = "❓"
+				}
+			}
+		}
+	}
 
 	// Get summary
 	summary := getString(fields, "summary", "")
 
-	// Build issue URL
+	serverURL := ""
+	if c != nil {
+		serverURL = c.Server
+	}
 	issueURL := fmt.Sprintf("%s/browse/%s", serverURL, issueKey)
 
 	return &IssueData{
-		Type:        typeNormalized,
-		Key:         issueKey,
-		URL:         issueURL,
-		Summary:     summary,
-		Status:      statusNormalized,
-		Assignee:    assignee,
-		Priority:    priority,
-		Created:     created,
-		Updated:     updated,
-		TargetEnd:   targetEnd,
-		StatusEmoji: statusEmoji,
+		Type:          typeNormalized,
+		Key:           issueKey,
+		URL:           issueURL,
+		Summary:       summary,
+		Status:        statusNormalized,
+		Assignee:      assignee,
+		Priority:      priority,
+		Created:       created,
+		Updated:       updated,
+		Due:           due,
+		StatusEmoji:   statusEmoji,
+		Trending:      trendingStr,
+		TrendingEmoji: trendingEmo,
 	}
 }
 
@@ -310,7 +417,7 @@ func (client *JiraClient) FetchIssuesFromQuery(jqlQuery string) ([]*IssueData, e
 	}
 
 	for _, issueJsonBlob := range jsonBlobs {
-		issueData := extractIssueData(issueJsonBlob, client.Server)
+		issueData := client.extractIssueData(issueJsonBlob)
 		issues = append(issues, issueData)
 	}
 
@@ -369,7 +476,7 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 			}
 			var children []*IssueData
 			for _, blob := range jsonBlobs {
-				children = append(children, extractIssueData(blob, client.Server))
+				children = append(children, client.extractIssueData(blob))
 			}
 			p.Children = children
 			logInfo("  Found %d children for %s", len(children), p.Key)
@@ -400,12 +507,11 @@ func (c *JiraClient) loadCustomFields(fieldNames map[string]string) error {
 // searchIssues searches for issues using JQL with pagination
 func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any, error) {
 	var b strings.Builder
-	b.WriteString("summary,status,issuetype,assignee,priority,created,updated")
+	b.WriteString("summary,status,issuetype,assignee,priority,created,updated,duedate")
 
 	c.ensureCustomFieldsLoaded()
 
-	// Add custom field IDs
-	for _, id := range customFields {
+	for _, id := range c.customFieldNameToID {
 		if id != "" {
 			b.WriteString(",")
 			b.WriteString(id)
@@ -674,9 +780,9 @@ func (c *JiraClient) getJsonList(endpoint string, params map[string]string) ([]m
 	return result, nil
 }
 
-// isStale returns true if the issue is past its target date and not done
-func isStale(targetEnd string) bool {
-	days, ok := DaysFromNow(targetEnd)
+// isStale returns true if the issue is past its due date and not done
+func isStale(dueDate string) bool {
+	days, ok := DaysFromNow(dueDate)
 	if !ok {
 		return false
 	}
@@ -684,8 +790,8 @@ func isStale(targetEnd string) bool {
 }
 
 // isDueWithinDays returns true if the issue has a target end date within the next n days and is not done.
-func isDueWithinDays(targetEnd string, days int) bool {
-	leftToGo, ok := DaysFromNow(targetEnd)
+func isDueWithinDays(dueDate string, days int) bool {
+	leftToGo, ok := DaysFromNow(dueDate)
 	if !ok {
 		return false
 	}

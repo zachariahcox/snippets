@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+// testJiraClientForExtract builds a minimal client for extractIssueData tests (no Jira connection).
+func testJiraClientForExtract(cfg *ReportConfig, nameToID map[string]string) *JiraClient {
+	if cfg == nil {
+		cfg = &ReportConfig{}
+	}
+	c := &JiraClient{Server: "https://jira.example.com"}
+	c.prepareFieldResolution(cfg)
+	if nameToID != nil {
+		for k, v := range nameToID {
+			c.customFieldNameToID[k] = v
+		}
+	}
+	return c
+}
+
 func TestExtractIssueData(t *testing.T) {
 	issue := map[string]any{
 		"key": "PROJ-1",
@@ -17,7 +32,7 @@ func TestExtractIssueData(t *testing.T) {
 			"updated":  "2025-01-02T12:00:00.000Z",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com")
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 	computeTrending(data)
 	if data.Key != "PROJ-1" {
 		t.Errorf("Key = %q, want PROJ-1", data.Key)
@@ -39,6 +54,23 @@ func TestExtractIssueData(t *testing.T) {
 	}
 }
 
+func TestExtractIssueData_nativeDueDate(t *testing.T) {
+	issue := map[string]any{
+		"key": "P-1",
+		"fields": map[string]any{
+			"summary":  "Has due",
+			"status":   map[string]any{"name": "In Progress"},
+			"duedate":  "2025-06-01",
+			"created":  "2025-01-01T00:00:00Z",
+			"updated":  "2025-01-02T00:00:00Z",
+		},
+	}
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
+	if data.Due != "2025-06-01" {
+		t.Errorf("Due = %q, want 2025-06-01", data.Due)
+	}
+}
+
 func TestExtractIssueData_missingFields(t *testing.T) {
 	issue := map[string]any{
 		"key": "PROJ-2",
@@ -46,7 +78,7 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 			"summary": "Minimal",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com")
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 	computeTrending(data)
 	if data.Key != "PROJ-2" {
 		t.Errorf("Key = %q, want PROJ-2", data.Key)
@@ -92,7 +124,7 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		issue := copyMap(base)
 		fields := issue["fields"].(map[string]any)
 		fields["status"] = map[string]any{"name": tt.statusName}
-		data := extractIssueData(issue, "https://jira.example.com")
+		data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 		computeTrending(data)
 		if data.Trending != tt.wantTrending {
 			t.Errorf("status %q: Trending: Actual = %q, Expected %q", tt.statusName, data.Trending, tt.wantTrending)
@@ -113,7 +145,7 @@ func TestExtractIssueData_createdUpdated(t *testing.T) {
 			"updated": "2024-07-20T14:30:00.000-0700",
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com")
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 	if data.Created != "2024-06-15T09:00:00.000Z" {
 		t.Errorf("Created = %q", data.Created)
 	}
@@ -123,7 +155,6 @@ func TestExtractIssueData_createdUpdated(t *testing.T) {
 }
 
 func TestExtractIssueData_overdue(t *testing.T) {
-	// In progress with past target end -> overdue (🔴, trending "overdue")
 	issue := map[string]any{
 		"key": "P-1",
 		"fields": map[string]any{
@@ -133,18 +164,13 @@ func TestExtractIssueData_overdue(t *testing.T) {
 			"updated": "2025-01-02T00:00:00Z",
 		},
 	}
-	// Target end comes from custom field; customFields["Target end"] may be unset.
-	// If set in code, we'd need to inject. So test without target end first.
-	data := extractIssueData(issue, "https://jira.example.com")
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 	computeTrending(data)
 	if data.TrendingEmoji != "🟢" {
 		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
-	// Resolved/closed are terminal Jira statuses; "done" is not a status string we branch on.
-	// Resolved + past target end must stay trending done (not flipped to off track by isStale).
-	oldKey := customFields["Target end"]
-	customFields["Target end"] = "targetEnd"
-	defer func() { customFields["Target end"] = oldKey }()
+	dueName := "Planned end"
+	cf := map[string]string{dueName: "dueCf"}
 	resolvedIssue := map[string]any{
 		"key": "P-2",
 		"fields": map[string]any{
@@ -152,10 +178,11 @@ func TestExtractIssueData_overdue(t *testing.T) {
 			"status":    map[string]any{"name": "Resolved"},
 			"created":   "2025-01-01T00:00:00Z",
 			"updated":   "2025-01-02T00:00:00Z",
-			"targetEnd": "2020-01-01",
+			"dueCf":     "2020-01-01",
 		},
 	}
-	dataResolved := extractIssueData(resolvedIssue, "https://jira.example.com")
+	cfg := &ReportConfig{DueDateFieldName: dueName}
+	dataResolved := testJiraClientForExtract(cfg, cf).extractIssueData(resolvedIssue)
 	computeTrending(dataResolved)
 	if dataResolved.Trending != "done" || dataResolved.TrendingEmoji != "🟣" {
 		t.Errorf("resolved issue (past target): Trending=%q Emoji=%q, want done/🟣", dataResolved.Trending, dataResolved.TrendingEmoji)
@@ -163,12 +190,9 @@ func TestExtractIssueData_overdue(t *testing.T) {
 }
 
 func TestExtractIssueData_atRisk(t *testing.T) {
-	// Not started + due within next month -> at risk (🟡, trending "at risk")
-	// Use UTC to align with DaysFromNow / isDueWithinNextMonth (UTC calendar "today").
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
-	oldKey := customFields["Target end"]
-	customFields["Target end"] = "targetEnd"
-	defer func() { customFields["Target end"] = oldKey }()
+	dueName := "Planned end"
+	cf := map[string]string{dueName: "dueCf"}
 
 	issue := map[string]any{
 		"key": "P-1",
@@ -177,16 +201,41 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 			"status":    map[string]any{"name": "Ready for Work"},
 			"created":   "2025-01-01T00:00:00Z",
 			"updated":   "2025-01-02T00:00:00Z",
-			"targetEnd": tomorrow,
+			"dueCf":     tomorrow,
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com")
+	cfg := &ReportConfig{DueDateFieldName: dueName}
+	data := testJiraClientForExtract(cfg, cf).extractIssueData(issue)
 	computeTrending(data)
 	if data.Trending != "at risk" {
 		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
 	}
 	if data.TrendingEmoji != "🟡" {
 		t.Errorf("not started + due tomorrow: Emoji = %q, want 🟡", data.TrendingEmoji)
+	}
+}
+
+func TestExtractIssueData_trendingFromJiraField(t *testing.T) {
+	trendName := "Delivery health"
+	id := "customfield_999"
+	issue := map[string]any{
+		"key": "P-1",
+		"fields": map[string]any{
+			"summary":        "X",
+			"status":         map[string]any{"name": "In Progress"},
+			"created":        "2025-01-01T00:00:00Z",
+			"updated":        "2025-01-02T00:00:00Z",
+			"customfield_999": map[string]any{"value": "Off track"},
+		},
+	}
+	cfg := &ReportConfig{TrendingStatusFieldName: trendName}
+	data := testJiraClientForExtract(cfg, map[string]string{trendName: id}).extractIssueData(issue)
+	if data.Trending != "off track" || data.TrendingEmoji != "🔴" {
+		t.Errorf("Trending=%q Emoji=%q, want off track/🔴", data.Trending, data.TrendingEmoji)
+	}
+	computeTrending(data)
+	if data.Trending != "off track" {
+		t.Errorf("computeTrending should not override Jira trending: got %q", data.Trending)
 	}
 }
 
@@ -198,7 +247,7 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 			"status":  map[string]any{"name": "  IN PROGRESS  "},
 		},
 	}
-	data := extractIssueData(issue, "https://jira.example.com")
+	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
 	computeTrending(data)
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)

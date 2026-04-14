@@ -8,24 +8,30 @@ import (
 )
 
 func TestCacheKey_deterministic(t *testing.T) {
-	k1 := CacheKey("project = X", nil, false)
-	k2 := CacheKey("project = X", nil, false)
+	cfg1 := &ReportConfig{JQLQuery: "project = X"}
+	k1 := CacheKey(cfg1, nil)
+	k2 := CacheKey(&ReportConfig{JQLQuery: "project = X"}, nil)
 	if k1 != k2 {
 		t.Errorf("same inputs gave different keys: %q vs %q", k1, k2)
 	}
 	// Key order should not matter
-	k3 := CacheKey("", []string{"A-1", "B-2"}, false)
-	k4 := CacheKey("", []string{"B-2", "A-1"}, false)
+	k3 := CacheKey(&ReportConfig{}, []string{"A-1", "B-2"})
+	k4 := CacheKey(&ReportConfig{}, []string{"B-2", "A-1"})
 	if k3 != k4 {
 		t.Errorf("same keys different order should match: %q vs %q", k3, k4)
 	}
 	// Different query -> different key
-	if CacheKey("jql1", nil, false) == CacheKey("jql2", nil, false) {
+	if CacheKey(&ReportConfig{JQLQuery: "jql1"}, nil) == CacheKey(&ReportConfig{JQLQuery: "jql2"}, nil) {
 		t.Error("different JQL should give different keys")
 	}
 	// --children on vs off must not share cache
-	if CacheKey("project = X", nil, false) == CacheKey("project = X", nil, true) {
+	if CacheKey(&ReportConfig{JQLQuery: "project = X", IncludeChildren: false}, nil) == CacheKey(&ReportConfig{JQLQuery: "project = X", IncludeChildren: true}, nil) {
 		t.Error("includeChildren flag should affect cache key")
+	}
+	// Custom field config affects key
+	base := &ReportConfig{JQLQuery: "project = X"}
+	if CacheKey(base, nil) == CacheKey(&ReportConfig{JQLQuery: "project = X", DueDateFieldName: "Planned end"}, nil) {
+		t.Error("DueDateFieldName should affect cache key")
 	}
 }
 
@@ -89,7 +95,7 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 	issueKeys := []string{"P-1"}
 
 	// Prime the cache with the same key FetchReportIssues would use
-	key := CacheKey(cfg.JQLQuery, issueKeys, cfg.IncludeChildren)
+	key := CacheKey(cfg, issueKeys)
 	path, err := cachePath(key)
 	if err != nil {
 		t.Fatalf("cachePath: %v", err)

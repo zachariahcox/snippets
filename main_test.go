@@ -57,6 +57,23 @@ func TestLoadJiraCreds_fromEnv(t *testing.T) {
 	}
 }
 
+func TestOptionalJiraCustomFieldNames_fromCredsFile(t *testing.T) {
+	dir := t.TempDir()
+	credsPath := filepath.Join(dir, "creds.sh")
+	script := `export JIRA_DUE_DATE_FIELD="Ship target"
+export JIRA_TRENDING_STATUS_FIELD="Health"
+`
+	if err := os.WriteFile(credsPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+	t.Setenv("JIRA_DUE_DATE_FIELD", "")
+	t.Setenv("JIRA_TRENDING_STATUS_FIELD", "")
+	due, trend := loadJiraCustomFieldNames(credsPath)
+	if due != "Ship target" || trend != "Health" {
+		t.Errorf("due=%q trend=%q", due, trend)
+	}
+}
+
 func TestLoadJiraCreds_missingRequired(t *testing.T) {
 	credsPath := filepath.Join(t.TempDir(), "creds.sh") // no file, so env only
 
