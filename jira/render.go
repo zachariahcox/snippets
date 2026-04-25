@@ -1,4 +1,4 @@
-package main
+package jira
 
 import (
 	"bytes"
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/zachariahcox/snippets/internal/logging"
 )
 
 func RenderReport(parentIssues []*IssueData, cfg *ReportConfig) {
@@ -42,7 +44,7 @@ func RenderReport(parentIssues []*IssueData, cfg *ReportConfig) {
 	if cfg.OutputFile != "" {
 		f, err := os.OpenFile(cfg.OutputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			logError("Error opening file %s: %v", cfg.OutputFile, err)
+			logging.Error("Error opening file %s: %v", cfg.OutputFile, err)
 			fmt.Println(outputData)
 			return
 		}
@@ -83,7 +85,7 @@ func trendingCommentForDisplay(s string) string {
 
 // RenderMarkdownReport renders issues as a markdown report
 func RenderMarkdownReport(issues []*IssueData, cfg *ReportConfig) string {
-	logInfo("Rendering markdown report for %d issues", len(issues))
+	logging.Info("Rendering markdown report for %d issues", len(issues))
 	issues = filterAndSortIssues(issues, cfg)
 
 	var result []string
@@ -180,7 +182,7 @@ func RenderJSONReport(issues []*IssueData, cfg *ReportConfig) string {
 	issues = filterAndSortIssues(issues, cfg)
 	jsonData, err := json.Marshal(issues)
 	if err != nil {
-		logError("Failed to marshal JSON: %v", err)
+		logging.Error("Failed to marshal JSON: %v", err)
 		return ""
 	}
 	return string(jsonData)
@@ -425,7 +427,7 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 		if cfg.UpdatedAfter != nil && issue.Updated != "" && issue.Updated != "N/A" {
 			updateDate, err := ParseJiraDate(issue.Updated)
 			if err != nil {
-				logWarning("Could not parse date '%s': %v", issue.Updated, err)
+				logging.Warning("Could not parse date '%s': %v", issue.Updated, err)
 				continue
 			}
 			if updateDate.Before(*cfg.UpdatedAfter) {
@@ -437,7 +439,7 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 		if cfg.NoCommentAfter != nil && issue.Comment.Created != "" && issue.Comment.Created != "N/A" {
 			commentDate, err := ParseJiraDate(issue.Comment.Created)
 			if err != nil {
-				logWarning("Could not parse date '%s': %v", issue.Comment.Created, err)
+				logging.Warning("Could not parse date '%s': %v", issue.Comment.Created, err)
 				continue
 			}
 			if commentDate.After(*cfg.NoCommentAfter) {
@@ -447,7 +449,7 @@ func filterAndSortIssues(issues []*IssueData, cfg *ReportConfig) []*IssueData {
 
 		filteredIssues = append(filteredIssues, issue)
 	}
-	logInfo("Filters excluded %d issues. %d issues remain.", len(issues)-len(filteredIssues), len(filteredIssues))
+	logging.Info("Filters excluded %d issues. %d issues remain.", len(issues)-len(filteredIssues), len(filteredIssues))
 
 	// Sort issues by status, target end, updated
 	sort.Slice(filteredIssues, func(i, j int) bool {
@@ -513,7 +515,7 @@ func FormatTimestampWithLink(timestamp, issueURL string, includeDaysAgo bool) st
 
 	t, err := ParseJiraDate(timestamp)
 	if err != nil {
-		logWarning("Could not format timestamp '%s': %v", timestamp, err)
+		logging.Warning("Could not format timestamp '%s': %v", timestamp, err)
 		return timestamp
 	}
 

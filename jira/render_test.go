@@ -1,4 +1,4 @@
-package main
+package jira
 
 import (
 	"encoding/json"
@@ -12,10 +12,13 @@ func TestGetStatusPriority(t *testing.T) {
 		t.Errorf("GetStatusPriority(done) = %d, want 0", got)
 	}
 	if got := GetStatusPriority("new"); got != 6 {
-		t.Errorf("GetStatusPriority(new) = %d, want 10", got)
+		t.Errorf("GetStatusPriority(new) = %d, want 6", got)
 	}
 	if got := GetStatusPriority("unknown"); got != 7 {
-		t.Errorf("GetStatusPriority(unknown) = %d, want 999", got)
+		t.Errorf("GetStatusPriority(unknown) = %d, want 7 (last entry in statusOrder)", got)
+	}
+	if got := GetStatusPriority("not-a-real-status"); got != 999 {
+		t.Errorf("GetStatusPriority(not-a-real-status) = %d, want 999", got)
 	}
 }
 

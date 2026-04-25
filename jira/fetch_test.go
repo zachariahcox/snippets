@@ -1,10 +1,10 @@
-package main
+package jira
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
-	"time"
+
+	"github.com/zachariahcox/snippets/internal/cache"
 )
 
 func TestCacheKey_deterministic(t *testing.T) {
@@ -14,21 +14,17 @@ func TestCacheKey_deterministic(t *testing.T) {
 	if k1 != k2 {
 		t.Errorf("same inputs gave different keys: %q vs %q", k1, k2)
 	}
-	// Key order should not matter
 	k3 := CacheKey(&ReportConfig{}, []string{"A-1", "B-2"})
 	k4 := CacheKey(&ReportConfig{}, []string{"B-2", "A-1"})
 	if k3 != k4 {
 		t.Errorf("same keys different order should match: %q vs %q", k3, k4)
 	}
-	// Different query -> different key
 	if CacheKey(&ReportConfig{JQLQuery: "jql1"}, nil) == CacheKey(&ReportConfig{JQLQuery: "jql2"}, nil) {
 		t.Error("different JQL should give different keys")
 	}
-	// --children on vs off must not share cache
 	if CacheKey(&ReportConfig{JQLQuery: "project = X", IncludeChildren: false}, nil) == CacheKey(&ReportConfig{JQLQuery: "project = X", IncludeChildren: true}, nil) {
 		t.Error("includeChildren flag should affect cache key")
 	}
-	// Custom field config affects key
 	base := &ReportConfig{JQLQuery: "project = X"}
 	if CacheKey(base, nil) == CacheKey(&ReportConfig{JQLQuery: "project = X", DueDateFieldName: "Planned end"}, nil) {
 		t.Error("DueDateFieldName should affect cache key")
@@ -63,29 +59,14 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 	}
 }
 
-func TestCacheValid(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "x.json")
-	if CacheValid(path, time.Hour) {
-		t.Error("nonexistent file should be invalid")
-	}
-	if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if !CacheValid(path, time.Hour) {
-		t.Error("recent file should be valid")
-	}
-}
-
-// TestFetchReportIssues_usesCache verifies that FetchReportIssues returns cached data when the
-// cache is primed, so tests (and the real binary) can rely on cache hits.
 func TestFetchReportIssues_usesCache(t *testing.T) {
 	dir := t.TempDir()
-	oldFn := cacheDirFn
-	cacheDirFn = func() (string, error) { return dir, nil }
-	defer func() { cacheDirFn = oldFn }()
+	oldHook := cache.DirHook
+	cache.DirHook = func() (string, error) { return dir, nil }
+	defer func() { cache.DirHook = oldHook }()
 
-	if err := EnsureCacheDir(); err != nil {
-		t.Fatalf("EnsureCacheDir: %v", err)
+	if err := cache.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
 	}
 
 	cfg := &ReportConfig{
@@ -94,11 +75,10 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 	}
 	issueKeys := []string{"P-1"}
 
-	// Prime the cache with the same key FetchReportIssues would use
 	key := CacheKey(cfg, issueKeys)
-	path, err := cachePath(key)
+	path, err := cache.PathForKey(key)
 	if err != nil {
-		t.Fatalf("cachePath: %v", err)
+		t.Fatalf("PathForKey: %v", err)
 	}
 	parent := []*IssueData{
 		{Key: "P-1", Summary: "Cached issue", Status: "done", TrendingEmoji: "🟣"},
@@ -107,7 +87,6 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 		t.Fatalf("WriteCache: %v", err)
 	}
 
-	// FetchReportIssues with nil client should hit the cache
 	gotParent, err := FetchReportIssues(nil, issueKeys, cfg)
 	if err != nil {
 		t.Fatalf("FetchReportIssues (cache hit): %v", err)

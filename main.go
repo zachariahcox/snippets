@@ -1,630 +1,135 @@
-// Generate status reports for Jira issues (optionally including subtasks and linked issues) using the Jira REST API.
-//
-// Features:
-//   - Fetch issues by JQL query or direct issue keys.
-//   - Optional --children: load linked/child issues and fold them into trending (default: off).
-//   - Derive status from Jira's native status field with emoji decoration.
-//   - Include due date and last update timestamps.
-//   - Filter issues by a minimum last-update date.
-//   - Emit a combined report for multiple issues or individual reports per issue.
-//   - Output to stdout or append/write to a specified markdown file.
-//   - Supports both Jira Cloud and Jira Server/Data Center.
-//
-// Configuration:
-//
-//	Environment variables (required):
-//	  JIRA_SERVER      - Jira server URL (e.g., https://mycompany.atlassian.net or https://jira.company.com)
-//	  JIRA_API_TOKEN   - Your API token or Personal Access Token (PAT)
-//	  JIRA_EMAIL       - Your Atlassian account email (required for Cloud)
-//	Optional:
-//	  JIRA_CONCURRENCY - Max parallel API calls (default 8; overridden by --jira-concurrency)
-//	  JIRA_DUE_DATE_FIELD - Custom field display name for due/due date (empty = Jira native Due Date). Overridden by --due-date-field.
-//	  JIRA_TRENDING_STATUS_FIELD - Custom field display name; when set, a non-empty value overrides computed trending for that issue.
-//
-// Usage:
-//
-//	snippets [options] <issue_keys_or_jql>
-//
-// Examples:
-//
-//	snippets --include-subtasks --since 2025-01-01 PROJECT-123 PROJECT-456
-//	snippets --jql "project = MYPROJ AND status != Done" --output-file status.md
-//	cat issues.txt | snippets --stdin --include-subtasks --include-parent -o aggregated.md
 package main
 
 import (
-	"bufio"
-	"flag"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
-	"time"
+
+	"github.com/zachariahcox/snippets/internal/cache"
+	"github.com/zachariahcox/snippets/internal/logging"
+	"github.com/zachariahcox/snippets/jira"
 )
 
-// Default configuration values
-const defaultPageSize = 50
-
-// resolveJiraConcurrency returns max parallel Jira calls: flag > 0 wins, else JIRA_CONCURRENCY, else 8.
-func resolveJiraConcurrency(flagVal int, env string) int {
-	if flagVal > 0 {
-		return flagVal
-	}
-	if env != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(env)); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 8
-}
-
-// credsFileName is the name of the optional shell script that can export JIRA_* vars.
-const credsFileName = ".snippets/creds.sh"
-
-// loadJiraCustomFieldNames returns JIRA_DUE_DATE_FIELD and JIRA_TRENDING_STATUS_FIELD from the environment,
-// then fills missing values from ~/.snippets/creds.sh when that file exists (same pattern as loadJiraCreds).
-// This runs before cache lookup so cache keys match runs that use creds-only field configuration.
-func loadJiraCustomFieldNames(credsFilePath string) (dueDateField, trendingStatusField string) {
-	dueDateField = strings.TrimSpace(os.Getenv("JIRA_DUE_DATE_FIELD"))
-	trendingStatusField = strings.TrimSpace(os.Getenv("JIRA_TRENDING_STATUS_FIELD"))
-
-	var credsPath string
-	if credsFilePath != "" {
-		credsPath = credsFilePath
-	} else {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			credsPath = ""
-		} else {
-			credsPath = filepath.Join(home, credsFileName)
-		}
-	}
-	if credsPath == "" {
-		return dueDateField, trendingStatusField
-	}
-	if _, statErr := os.Stat(credsPath); statErr != nil {
-		return dueDateField, trendingStatusField
-	}
-	script := fmt.Sprintf(`. %q 2>/dev/null; echo "JIRA_DUE_DATE_FIELD=$JIRA_DUE_DATE_FIELD"; echo "JIRA_TRENDING_STATUS_FIELD=$JIRA_TRENDING_STATUS_FIELD"`, credsPath)
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = os.Environ()
-	out, cmdErr := cmd.Output()
-	if cmdErr != nil {
-		return dueDateField, trendingStatusField
-	}
-	for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		i := strings.Index(line, "=")
-		if i <= 0 {
-			continue
-		}
-		key, val := line[:i], line[i+1:]
-		val = strings.Trim(val, "\"")
-		switch key {
-		case "JIRA_DUE_DATE_FIELD":
-			if dueDateField == "" && val != "" {
-				dueDateField = strings.TrimSpace(val)
-			}
-		case "JIRA_TRENDING_STATUS_FIELD":
-			if trendingStatusField == "" && val != "" {
-				trendingStatusField = strings.TrimSpace(val)
-			}
-		}
-	}
-	return dueDateField, trendingStatusField
-}
-
-// loadJiraCreds returns JIRA_SERVER, JIRA_API_TOKEN, and JIRA_EMAIL from the environment
-// and optionally from a creds shell script (sourced in a subprocess). Env vars take precedence.
-// credsFilePath: if non-empty, use this path; otherwise use ~/.snippets/creds.sh. Pass "" in production.
-// Returns an error if JIRA_SERVER or JIRA_API_TOKEN are missing.
-func loadJiraCreds(credsFilePath string) (server, apiToken, email string, err error) {
-	server = os.Getenv("JIRA_SERVER")
-	apiToken = os.Getenv("JIRA_API_TOKEN")
-	email = os.Getenv("JIRA_EMAIL")
-
-	// Resolve creds file path
-	var credsPath string
-	if credsFilePath != "" {
-		credsPath = credsFilePath
-	} else {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			credsPath = ""
-		} else {
-			credsPath = filepath.Join(home, credsFileName)
-		}
-	}
-	if credsPath != "" {
-		if _, statErr := os.Stat(credsPath); statErr == nil {
-			script := fmt.Sprintf(`. %q 2>/dev/null; echo "JIRA_SERVER=$JIRA_SERVER"; echo "JIRA_API_TOKEN=$JIRA_API_TOKEN"; echo "JIRA_EMAIL=$JIRA_EMAIL"`, credsPath)
-			cmd := exec.Command("sh", "-c", script)
-			cmd.Env = os.Environ()
-			out, cmdErr := cmd.Output()
-			if cmdErr == nil {
-				for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
-					line = strings.TrimSpace(line)
-					if line == "" {
-						continue
-					}
-					i := strings.Index(line, "=")
-					if i <= 0 {
-						continue
-					}
-					key, val := line[:i], line[i+1:]
-					val = strings.Trim(val, "\"")
-					switch key {
-					case "JIRA_SERVER":
-						if server == "" && val != "" {
-							server = val
-						}
-					case "JIRA_API_TOKEN":
-						if apiToken == "" && val != "" {
-							apiToken = val
-						}
-					case "JIRA_EMAIL":
-						if email == "" && val != "" {
-							email = val
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Validate required fields
-	if server == "" {
-		return "", "", "", fmt.Errorf("JIRA_SERVER is not set (set env var or export from ~/.snippets/creds.sh)")
-	}
-	if apiToken == "" {
-		return "", "", "", fmt.Errorf("JIRA_API_TOKEN is not set (set env var or export from ~/.snippets/creds.sh)")
-	}
-	return server, apiToken, email, nil
-}
-
-// Version and BuildDate are set via ldflags when building with make
+// Version and BuildDate are set via ldflags when building with make.
 var (
 	Version   = "dev"
 	BuildDate = "unknown"
 )
 
-// ReportConfig holds options for report generation
-type ReportConfig struct {
-	Title           string
-	UpdatedAfter    *time.Time
-	NoCommentAfter  *time.Time
-	OutputFile      string
-	JSONOutput      bool
-	CSVOutput       bool
-	SlackOutput     bool
-	URLOutput       bool
-	SimpleOutput    bool
-	SummaryOutput   bool
-	JQLQuery        string
-	IncludeChildren bool // fetch child issues and roll them into computeTrending
-
-	// DueDateFieldName is the Jira custom field display name for due/due dates; empty means use the native Due Date (duedate).
-	DueDateFieldName string
-	// TrendingStatusFieldName is the Jira custom field display name for trending; empty means trending is computed from status/dates.
-	TrendingStatusFieldName string
-	// CustomFieldNameToID maps custom field display names to REST field IDs after the client resolves them (filled during fetch).
-	CustomFieldNameToID map[string]string
-}
-
-func (c *ReportConfig) String() string {
-	if c == nil {
-		return "nil"
-	}
-	since := ""
-	if c.UpdatedAfter != nil {
-		since = c.UpdatedAfter.Format("2006-01-02")
-	}
-	noComment := ""
-	if c.NoCommentAfter != nil {
-		noComment = c.NoCommentAfter.Format("2006-01-02")
-	}
-	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t children=%t dueField=%q trendField=%q fieldIDs=%d",
-		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
-		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput,
-		c.SimpleOutput, c.SummaryOutput, c.IncludeChildren,
-		c.DueDateFieldName, c.TrendingStatusFieldName, len(c.CustomFieldNameToID))
-}
-
-// ParseSince parses --since: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days).
-// now is used for the "days ago" calculation (pass time.Now().UTC() in production).
-func ParseSince(s string, now time.Time) (*time.Time, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil, nil
-	}
-	if n, err := strconv.Atoi(s); err == nil {
-		t := now.AddDate(0, 0, -n)
-		return &t, nil
-	}
-	if t, err := time.Parse("2006-01-02", s); err == nil {
-		t = t.UTC()
-		return &t, nil
-	}
-	return nil, fmt.Errorf("invalid --since %q: use YYYY-MM-DD or number of days", s)
-}
-
-// ParseJiraDate parses a Jira date string
-func ParseJiraDate(dateStr string) (time.Time, error) {
-	if dateStr == "" {
-		return time.Time{}, fmt.Errorf("empty date string")
-	}
-
-	// Try various formats
-	formats := []string{
-		"2006-01-02T15:04:05.000-0700",
-		"2006-01-02T15:04:05.000Z",
-		"2006-01-02T15:04:05-0700",
-		"2006-01-02T15:04:05Z",
-		time.RFC3339,
-		"2006-01-02",
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, dateStr); err == nil {
-			return t, nil
-		}
-	}
-
-	// Try regex fix for +0000 format
-	re := regexp.MustCompile(`(\d{2})(\d{2})$`)
-	fixed := re.ReplaceAllString(dateStr, "$1:$2")
-	if t, err := time.Parse(time.RFC3339, fixed); err == nil {
-		return t, nil
-	}
-
-	return time.Time{}, fmt.Errorf("could not parse date: %s", dateStr)
-}
-
-// DaysFromNow returns the number of days from today for the given date string.
-// Positive = future, negative = past. The second return is false if the date cannot be parsed.
-// "Today" and date-only YYYY-MM-DD values use the UTC calendar day (see also isDueWithinNextMonth).
-func DaysFromNow(dateStr string) (int, bool) {
-	if dateStr == "" || dateStr == "None" {
-		return 0, false
-	}
-	now := time.Now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	var target time.Time
-	if !strings.Contains(dateStr, "T") {
-		t, err := time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return 0, false
-		}
-		target = t.UTC()
-	} else {
-		t, err := ParseJiraDate(dateStr)
-		if err != nil {
-			return 0, false
-		}
-		target = t.UTC()
-	}
-	targetDay := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, time.UTC)
-	days := int(targetDay.Sub(today).Hours() / 24)
-	return days, true
-}
-
-// FetchReportIssues generates a report of issues. It tries the cache first; on hit it returns
-// cached data (client may be nil for cache-only lookup). On cache miss with client == nil it
-// returns ErrCacheMiss. On cache miss with client != nil it fetches from Jira, writes the
-// cache, and returns the result.
-func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig) ([]*IssueData, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("cfg is nil")
-	}
-	logInfo("Fetching issues for configuration: %v", cfg)
-
-	key := CacheKey(cfg, issueKeys)
-	if err := EnsureCacheDir(); err != nil {
-		logWarning("Cache dir unavailable: %v", err)
-	} else {
-		// Check cache first without pruning (pruning does ReadDir+Stat on every file and can be slow).
-		path, err := cachePath(key)
-		if err == nil && CacheValid(path, cacheTTL) {
-			parentIssues, err := ReadCache(path)
-			if err == nil {
-				logInfo("Using cached results at %s.", path)
-				return parentIssues, nil
-			}
-			logDebug("Cache read failed: %v", err)
-		}
-	}
-
-	if client == nil {
-		return nil, ErrCacheMiss
-	}
-
-	client.prepareFieldResolution(cfg)
-
-	// Prune only when we're about to fetch (and possibly write); avoids slow ReadDir+Stat on cache-hit path.
-	_ = PruneCache(cacheTTL)
-
-	// load raw issue data
-	var parentIssues []*IssueData
-	if cfg.JQLQuery != "" {
-		issues, err := client.FetchIssuesFromQuery(cfg.JQLQuery)
-		if err != nil {
-			logError("JQL query failed: %v", err)
-			return nil, err
-		}
-		parentIssues = issues
-
-		// update issue keys
-		issueKeys = make([]string, len(parentIssues))
-		for i, issue := range parentIssues {
-			issueKeys[i] = issue.Key
-		}
-	} else {
-		issues, err := client.FetchIssuesByKeys(issueKeys)
-		if err != nil {
-			logError("Failed to fetch issues: %v", err)
-			return nil, err
-		}
-		parentIssues = issues
-	}
-
-	if cfg.IncludeChildren {
-		client.loadChildren(parentIssues)
-	}
-
-	// load comments
-	client.loadComments(parentIssues)
-
-	// compute trending
-	for _, issue := range parentIssues {
-		computeTrending(issue)
-	}
-
-	// Write cache for next run
-	if path, err := cachePath(key); err == nil {
-		if wErr := WriteCache(path, parentIssues); wErr != nil {
-			logWarning("Failed to write cache: %v", wErr)
-		} else {
-			logDebug("Cached results to %s", path)
-		}
-	}
-
-	return parentIssues, nil
-}
-
 func main() {
-	// Define flags
-	jqlQuery := flag.String("jql", "", "JQL query to fetch issues (alternative to specifying keys)")
-	sinceStr := flag.String("since", "", "Only include issues updated on or after: YYYY-MM-DD, or N (days ago, e.g. 14)")
-	needsUpdate := flag.Int("needs-update", 0, "Exclude issues with a comment in the past N days (0=disabled)")
-	title := flag.String("title", "", "Custom title for the report")
-	outputFile := flag.String("output-file", "", "Write/append the markdown report to this file")
-	outputFileShort := flag.String("o", "", "Write/append the markdown report to this file (short)")
-	individual := flag.Bool("individual", false, "Generate a separate report section for each issue")
-	individualShort := flag.Bool("i", false, "Generate a separate report section for each issue (short)")
-	useStdin := flag.Bool("stdin", false, "Read issue keys from stdin (one per line)")
-	useStdinShort := flag.Bool("s", false, "Read issue keys from stdin (short)")
-	verbose := flag.Bool("verbose", false, "Enable verbose debug logging")
-	verboseShort := flag.Bool("v", false, "Enable verbose debug logging (short)")
-	jsonOutput := flag.Bool("json", false, "Output in JSON format")
-	csvOutput := flag.Bool("csv", false, "Output in CSV format ('cat separated value': 🐱)")
-	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
-	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
-	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
-	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
-	children := flag.Bool("children", false, "Fetch child/linked issues and use them when computing trending")
-	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
-	showVersion := flag.Bool("version", false, "Print version and exit")
-	jiraConcurrency := flag.Int("jira-concurrency", 0, "Max parallel Jira API requests (0=use JIRA_CONCURRENCY env or 8)")
-	dueDateFieldFlag := flag.String("due-date-field", "", "Jira custom field display name for due/due date (overrides JIRA_DUE_DATE_FIELD; empty = native Due Date)")
+	os.Exit(run(os.Args[1:]))
+}
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: snippets [options] <issue_keys...>
+func run(args []string) int {
+	logging.SetLevel(logging.LevelWarning)
 
-Generate a status report for Jira issues (and optional subtasks/linked issues)
+	if len(args) == 0 {
+		printRootUsage(os.Stderr)
+		return 1
+	}
 
-Options:
-`)
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Environment variables:
-  JIRA_SERVER     - Jira server URL (required)
-  JIRA_API_TOKEN  - API token or Personal Access Token (required)
-  JIRA_EMAIL      - Your email/username (required for Cloud, optional for Server)
-  JIRA_CONCURRENCY - Optional max parallel API calls (default 8; overridden by --jira-concurrency)
-  JIRA_DUE_DATE_FIELD - Optional custom field display name for due date (empty = native Due Date)
-  JIRA_TRENDING_STATUS_FIELD - Optional custom field; when set, non-empty values override computed trending
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		switch args[i] {
+		case "-h", "--help":
+			printRootUsage(os.Stdout)
+			return 0
+		case "--version", "-version":
+			fmt.Printf("snippets %s (built %s)\n", Version, BuildDate)
+			return 0
+		case "-v", "--verbose":
+			logging.SetLevel(logging.LevelDebug)
+			i++
+		default:
+			fmt.Fprintf(os.Stderr, "unknown global flag %q\n\n", args[i])
+			printRootUsage(os.Stderr)
+			return 2
+		}
+	}
+
+	rest := args[i:]
+	if len(rest) == 0 {
+		printRootUsage(os.Stderr)
+		return 1
+	}
+
+	cmd := rest[0]
+	cmdArgs := rest[1:]
+
+	switch cmd {
+	case "help":
+		if len(cmdArgs) == 0 {
+			printRootUsage(os.Stdout)
+			return 0
+		}
+		switch cmdArgs[0] {
+		case "jira":
+			jira.PrintUsage(os.Stdout)
+			fmt.Fprintln(os.Stdout, "\nRun snippets jira -h for all flags.")
+			return 0
+		default:
+			fmt.Fprintf(os.Stderr, "unknown help topic %q\n", cmdArgs[0])
+			return 2
+		}
+
+	case "jira":
+		return jira.Run(cmdArgs)
+
+	case "cache":
+		return runCache(cmdArgs)
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
+		printRootUsage(os.Stderr)
+		return 2
+	}
+}
+
+func runCache(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: snippets cache clear")
+		return 1
+	}
+	switch args[0] {
+	case "clear":
+		if err := cache.Clear(); err != nil {
+			logging.Error("Failed to clear cache: %v", err)
+			return 1
+		}
+		fmt.Println("Cache cleared.")
+		return 0
+	case "-h", "--help":
+		fmt.Fprintln(os.Stdout, "Usage: snippets cache clear")
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown cache subcommand %q\n", args[0])
+		fmt.Fprintln(os.Stderr, "Usage: snippets cache clear")
+		return 2
+	}
+}
+
+func printRootUsage(w io.Writer) {
+	fmt.Fprintf(w, `snippets — small CLI tools
+
+Usage:
+  snippets [global options] <command> [command options] [arguments]
+
+Global options:
+  -v, --verbose     Enable debug logging for commands
+  --version         Print version and exit
+  -h, --help        Show this help (or use: snippets help <command>)
+
+Commands:
+  jira    Jira issue status reports (keys, JQL, markdown/JSON/CSV/…)
+  cache   Manage the shared cache directory (~/.snippets/cache)
+  help    Show help for a command
 
 Examples:
-  snippets PROJECT-123 PROJECT-456
-  snippets --jql "project = MYPROJ AND status != Done"
-  snippets --include-subtasks --since 2025-01-01 PROJECT-123
-  snippets --title "Weekly Status" PROJECT-123 PROJECT-456
+  snippets jira PROJECT-123
+  snippets -v jira --jql "project = MYPROJ AND status != Done"
+  snippets cache clear
+
+Run snippets jira -h for Jira-specific flags and environment variables.
 `)
-	}
-
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Printf("snippets %s (built %s)\n", Version, BuildDate)
-		os.Exit(0)
-	}
-
-	if *clearCache {
-		if err := ClearCache(); err != nil {
-			logError("Failed to clear cache: %v", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Cache cleared.\n")
-		os.Exit(0)
-	}
-
-	// Merge short flags
-	if *outputFileShort != "" && *outputFile == "" {
-		*outputFile = *outputFileShort
-	}
-	if *individualShort {
-		*individual = true
-	}
-	if *useStdinShort {
-		*useStdin = true
-	}
-	if *verboseShort {
-		*verbose = true
-	}
-
-	// Set log level
-	if *verbose {
-		logLevel = LogLevelDebug
-	} else {
-		logLevel = LogLevelWarning
-	}
-
-	// Collect issue keys
-	issueKeys := flag.Args()
-
-	// Read from stdin if requested or if no args and stdin has data
-	if *useStdin {
-		logInfo("Reading issue keys from stdin...")
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			key := strings.TrimSpace(scanner.Text())
-			if key != "" {
-				issueKeys = append(issueKeys, key)
-			}
-		}
-	}
-
-	// Validate input
-	if len(issueKeys) == 0 && *jqlQuery == "" {
-		flag.Usage()
-		logError("\nNo issue keys or JQL query provided.")
-		os.Exit(1)
-	}
-
-	// log if we're running jql or direct issue keys
-	if *jqlQuery != "" {
-		logInfo("Running JQL query: %s", *jqlQuery)
-	} else {
-		logInfo("Processing %d issues...", len(issueKeys))
-	}
-
-	// Parse since date: YYYY-MM-DD or numeric days ago (e.g. 14 = now - 14 days)
-	// This query can be supported directly by JQL.
-	var since *time.Time
-	if *sinceStr != "" {
-		t, err := ParseSince(*sinceStr, time.Now().UTC())
-		if err != nil {
-			logError("%v", err)
-			os.Exit(1)
-		}
-		since = t
-		if since != nil {
-			logInfo("since filter: include issues updated after %s", since.Format("2006-01-02"))
-		}
-	}
-
-	// parse "needs update"
-	// This query CANNOT be supported directly by JQL.
-	var noCommentAfter *time.Time
-	if *needsUpdate > 0 {
-		t := time.Now().UTC().AddDate(0, 0, -*needsUpdate)
-		noCommentAfter = &t
-		logInfo("needs-update filter: include issues with a comment after %s", noCommentAfter)
-	}
-
-	// Remove existing output file
-	if *outputFile != "" {
-		if _, err := os.Stat(*outputFile); err == nil {
-			if err := os.Remove(*outputFile); err != nil {
-				logWarning("Could not remove existing file %s: %v", *outputFile, err)
-			} else {
-				logInfo("Removed existing file: %s", *outputFile)
-			}
-		}
-	}
-
-	if *title == "" {
-		*title = "Snippets!"
-	}
-
-	// resolve custom field names
-	dueFromEnv, trendFromEnv := loadJiraCustomFieldNames("")
-	dueDateFieldName := strings.TrimSpace(*dueDateFieldFlag)
-	if dueDateFieldName == "" {
-		dueDateFieldName = dueFromEnv
-	}
-
-	cfg := &ReportConfig{
-		Title:                   *title,
-		UpdatedAfter:            since,
-		NoCommentAfter:          noCommentAfter,
-		OutputFile:              *outputFile,
-		JSONOutput:              *jsonOutput,
-		CSVOutput:               *csvOutput,
-		SlackOutput:             *slackOutput,
-		URLOutput:               *urlOutput,
-		SimpleOutput:            *simpleOutput,
-		SummaryOutput:           *summaryOutput,
-		JQLQuery:                *jqlQuery,
-		IncludeChildren:         *children,
-		DueDateFieldName:        dueDateFieldName,
-		TrendingStatusFieldName: trendFromEnv,
-	}
-
-	// Try cache first when not in individual mode (skip Jira entirely on hit)
-	if !*individual {
-		parentIssues, err := FetchReportIssues(nil, issueKeys, cfg)
-		if err == nil {
-			RenderReport(parentIssues, cfg)
-			os.Exit(0)
-		}
-		if err != ErrCacheMiss {
-			logError("%v", err)
-			os.Exit(1)
-		}
-	}
-
-	// Load credentials and connect to Jira
-	server, apiToken, email, err := loadJiraCreds("")
-	if err != nil {
-		logError("%v", err)
-		os.Exit(1)
-	}
-	if email == "" {
-		logDebug("JIRA_EMAIL is not set. Set the env var or export it from ~/.snippets/creds.sh for Cloud.")
-	}
-	var client *JiraClient
-	client, err = NewJiraClient(server, apiToken, email)
-	if err != nil {
-		logError("%v", err)
-		os.Exit(1)
-	}
-	client.MaxConcurrent = resolveJiraConcurrency(*jiraConcurrency, os.Getenv("JIRA_CONCURRENCY"))
-	logDebug("Jira max concurrent requests: %d", client.concurrencyCap())
-
-	// Fetch issues and render report
-	// if there are multiple "parents", render multiple reports.
-	if *individual {
-		for _, issueKey := range issueKeys {
-			parentIssues, err := FetchReportIssues(client, []string{issueKey}, cfg)
-			if err != nil {
-				logError("%v", err)
-				os.Exit(1)
-			}
-			RenderReport(parentIssues, cfg)
-		}
-	} else {
-		parentIssues, err := FetchReportIssues(client, issueKeys, cfg)
-		if err != nil {
-			logError("%v", err)
-			os.Exit(1)
-		}
-		RenderReport(parentIssues, cfg)
-	}
 }

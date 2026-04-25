@@ -1,4 +1,4 @@
-package main
+package jira
 
 import (
 	"encoding/base64"
@@ -11,10 +11,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zachariahcox/snippets/internal/logging"
 )
 
 // defaultJiraConcurrency is used when MaxConcurrent is unset or invalid.
 const defaultJiraConcurrency = 8
+
+const defaultPageSize = 50
 
 // JiraClient is a simple Jira REST API client
 type JiraClient struct {
@@ -71,30 +75,6 @@ var statusOrder = []string{
 	"unknown",
 }
 
-// IssueData represents extracted issue data
-type IssueComment struct {
-	Url     string `json:"url"`
-	Created string `json:"created"`
-}
-type IssueData struct {
-	Key             string       `json:"key"`
-	URL             string       `json:"url"`
-	Summary         string       `json:"summary"`
-	Status          string       `json:"status"`
-	StatusEmoji     string       `json:"status_emoji"`
-	Assignee        string       `json:"assignee"`
-	Priority        string       `json:"priority"`
-	Created         string       `json:"created"`
-	Updated         string       `json:"updated"`
-	Due             string       `json:"target_end"`
-	Trending        string       `json:"trending"`
-	TrendingEmoji   string       `json:"Emoji"` // cache compat: historical key name
-	TrendingComment string       `json:"trending_comment"`
-	Comment         IssueComment `json:"comment"`
-	Type            string       `json:"type"` // initiative, epic, story, subtask, …
-	Children        []*IssueData `json:"children"`
-}
-
 // NewJiraClient creates a new Jira client
 func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 	if server == "" || apiToken == "" {
@@ -109,9 +89,9 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 			return nil, fmt.Errorf("JIRA_EMAIL is required for Jira Cloud authentication")
 		}
 		apiVersion = "3"
-		logDebug("Using Jira Cloud authentication (API v%s)", apiVersion)
+		logging.Debug("Using Jira Cloud authentication (API v%s)", apiVersion)
 	} else {
-		logDebug("Using Jira on-prem authentication (API v%s)", apiVersion)
+		logging.Debug("Using Jira on-prem authentication (API v%s)", apiVersion)
 	}
 
 	client := &JiraClient{
@@ -127,7 +107,7 @@ func NewJiraClient(server, apiToken, email string) (*JiraClient, error) {
 		return nil, fmt.Errorf("failed to connect to Jira. Check your credentials and server URL.\nFor Jira Server/Data Center, ensure you're using a valid Personal Access Token (PAT)")
 	}
 
-	logDebug("Connected to Jira server: %s", server)
+	logging.Debug("Connected to Jira server: %s", server)
 	return client, nil
 }
 
@@ -171,7 +151,7 @@ func (c *JiraClient) ensureCustomFieldsLoaded() {
 	}
 	if len(c.customFieldNameToID) > 0 {
 		if err := c.loadCustomFields(c.customFieldNameToID); err != nil {
-			logWarning("Could not load custom fields: %v", err)
+			logging.Warning("Could not load custom fields: %v", err)
 		}
 	}
 	if c.fieldCfg != nil {
@@ -406,13 +386,13 @@ func (client *JiraClient) FetchIssue(issueKey string) (*IssueData, error) {
 }
 
 func (client *JiraClient) FetchIssuesFromQuery(jqlQuery string) ([]*IssueData, error) {
-	logInfo("Executing JQL query: %s", jqlQuery)
+	logging.Info("Executing JQL query: %s", jqlQuery)
 
 	issues := []*IssueData{} // we don't know how many there will be
 
 	jsonBlobs, err := client.searchIssues(jqlQuery, 1000)
 	if err != nil {
-		logError("JQL query failed: %v", err)
+		logging.Error("JQL query failed: %v", err)
 		return nil, err
 	}
 
@@ -421,7 +401,7 @@ func (client *JiraClient) FetchIssuesFromQuery(jqlQuery string) ([]*IssueData, e
 		issues = append(issues, issueData)
 	}
 
-	logInfo("Found %d issues from JQL query", len(issues))
+	logging.Info("Found %d issues from JQL query", len(issues))
 	return issues, nil
 }
 
@@ -444,7 +424,7 @@ func (client *JiraClient) FetchIssuesByKeys(issueKeys []string) ([]*IssueData, e
 		// fetch the issues
 		result, err := client.FetchIssuesFromQuery(jql)
 		if err != nil {
-			logError("Failed to fetch issues: %v", err)
+			logging.Error("Failed to fetch issues: %v", err)
 			return nil, err
 		}
 		issues = append(issues, result...)
@@ -467,10 +447,10 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 			defer func() { <-sem }()
 
 			jql := fmt.Sprintf(`issue in linkedIssues(%s, "is parent of") or issue in childIssuesOf(%s)`, p.Key, p.Key)
-			logInfo("Loading children for %s: %s", p.Key, jql)
+			logging.Info("Loading children for %s: %s", p.Key, jql)
 			jsonBlobs, err := client.searchIssues(jql, 1000)
 			if err != nil {
-				logError("Failed to load children for %s: %v", p.Key, err)
+				logging.Error("Failed to load children for %s: %v", p.Key, err)
 				p.Children = nil
 				return
 			}
@@ -479,7 +459,7 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 				children = append(children, client.extractIssueData(blob))
 			}
 			p.Children = children
-			logInfo("  Found %d children for %s", len(children), p.Key)
+			logging.Info("  Found %d children for %s", len(children), p.Key)
 		}(parent)
 	}
 	wg.Wait()
@@ -531,7 +511,7 @@ func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any,
 			"maxResults": fmt.Sprintf("%d", pageSize),
 		}
 
-		logDebug("Fetching issues: startAt=%d, maxResults=%d", startAt, pageSize)
+		logging.Debug("Fetching issues: startAt=%d, maxResults=%d", startAt, pageSize)
 		response, err := c.getJson("search", params)
 		if err != nil {
 			return nil, err
@@ -541,7 +521,7 @@ func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any,
 		total := getInt(response, "total")
 
 		allIssues = append(allIssues, issues...)
-		logDebug("Fetched %d issues (total so far: %d, server total: %d)", len(issues), len(allIssues), total)
+		logging.Debug("Fetched %d issues (total so far: %d, server total: %d)", len(issues), len(allIssues), total)
 
 		if len(allIssues) >= total || len(allIssues) >= maxResults {
 			break
@@ -556,7 +536,7 @@ func (c *JiraClient) searchIssues(jql string, maxResults int) ([]map[string]any,
 		pageSize = min(defaultPageSize, remaining)
 	}
 
-	logInfo("Fetched %d issues total", len(allIssues))
+	logging.Info("Fetched %d issues total", len(allIssues))
 	if len(allIssues) > maxResults {
 		return allIssues[:maxResults], nil
 	}
@@ -691,7 +671,7 @@ func findLatestComment(comments []map[string]any) map[string]any {
 func (c *JiraClient) TestConnection() bool {
 	_, err := c.getJson("myself", nil)
 	if err != nil {
-		logError("Connection test failed: %v", err)
+		logging.Error("Connection test failed: %v", err)
 		return false
 	}
 	return true
@@ -710,7 +690,7 @@ func (c *JiraClient) doRequest(method, endpoint string, params map[string]string
 		baseURL += "?" + values.Encode()
 	}
 
-	logDebug("Request: %s %s", method, baseURL)
+	logging.Debug("Request: %s %s", method, baseURL)
 
 	req, err := http.NewRequest(method, baseURL, nil)
 	if err != nil {
@@ -740,10 +720,10 @@ func (c *JiraClient) doRequest(method, endpoint string, params map[string]string
 		return nil, err
 	}
 
-	logDebug("Response: %d", resp.StatusCode)
+	logging.Debug("Response: %d", resp.StatusCode)
 
 	if resp.StatusCode >= 400 {
-		logError("API error: %d - %s", resp.StatusCode, truncate(string(body), 500))
+		logging.Error("API error: %d - %s", resp.StatusCode, truncate(string(body), 500))
 		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
 	}
 
