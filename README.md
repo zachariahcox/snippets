@@ -61,7 +61,7 @@ Run with issue keys or a JQL query:
 ```bash
 snippets PROJECT-123 PROJECT-456
 snippets --jql "project = MYPROJ AND status != Done"
-snippets --include-subtasks --output-file status.md PROJECT-123
+snippets --children --output-file status.md PROJECT-123
 ```
 
 Use `snippets -h` for all options.

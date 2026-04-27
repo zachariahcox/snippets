@@ -27,9 +27,9 @@
 //
 // Examples:
 //
-//	snippets --include-subtasks --since 2025-01-01 PROJECT-123 PROJECT-456
+//	snippets --children --since 2026-01-01 PROJECT-123 PROJECT-456
 //	snippets --jql "project = MYPROJ AND status != Done" --output-file status.md
-//	cat issues.txt | snippets --stdin --include-subtasks --include-parent -o aggregated.md
+//	cat issues.txt | snippets --stdin --children -o aggregated.md
 package main
 
 import (
@@ -443,7 +443,7 @@ Environment variables:
 Examples:
   snippets PROJECT-123 PROJECT-456
   snippets --jql "project = MYPROJ AND status != Done"
-  snippets --include-subtasks --since 2025-01-01 PROJECT-123
+  snippets --children --since 2026-01-01 PROJECT-123
   snippets --title "Weekly Status" PROJECT-123 PROJECT-456
 `)
 	}
