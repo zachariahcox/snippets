@@ -30,12 +30,12 @@ func RenderReport(parentIssues []*IssueData, cfg *ReportConfig) {
 		outputData = RenderSlackReport(issuesToRender, cfg)
 	} else if cfg.URLOutput {
 		outputData = RenderURLReport(issuesToRender, cfg)
-	} else if cfg.SimpleOutput {
-		outputData = RenderSimpleReport(issuesToRender, cfg)
 	} else if cfg.SummaryOutput {
 		outputData = RenderMarkdownStatusSummary(issuesToRender, cfg)
-	} else {
+	} else if cfg.MarkdownOutput {
 		outputData = RenderMarkdownReport(issuesToRender, cfg)
+	} else {
+		outputData = RenderSimpleReport(issuesToRender, cfg)
 	}
 
 	// Output

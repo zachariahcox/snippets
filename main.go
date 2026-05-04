@@ -7,7 +7,8 @@
 //   - Include due date and last update timestamps.
 //   - Filter issues by a minimum last-update date.
 //   - Emit a combined report for multiple issues or individual reports per issue.
-//   - Output to stdout or append/write to a specified markdown file.
+//   - Default stdout/file output is simple tab-aligned text; use --markdown for the full markdown table.
+//   - Output to stdout or append/write to a file (--markdown and --summary emit markdown).
 //   - Supports both Jira Cloud and Jira Server/Data Center.
 //
 // Configuration:
@@ -28,7 +29,7 @@
 // Examples:
 //
 //	snippets --children --since 2026-01-01 PROJECT-123 PROJECT-456
-//	snippets --jql "project = MYPROJ AND status != Done" --output-file status.md
+//	snippets --markdown --jql "project = MYPROJ AND status != Done" --output-file status.md
 //	cat issues.txt | snippets --stdin --children -o aggregated.md
 package main
 
@@ -43,6 +44,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zachariahcox/snippets/filecache"
 )
 
 // Default configuration values
@@ -204,8 +207,10 @@ type ReportConfig struct {
 	CSVOutput       bool
 	SlackOutput     bool
 	URLOutput       bool
-	SimpleOutput    bool
-	SummaryOutput   bool
+	// MarkdownOutput selects the full markdown issue table (links, columns). When false and no other
+	// structured format is set, RenderReport uses simple text. SummaryOutput is separate markdown.
+	MarkdownOutput bool
+	SummaryOutput  bool
 	JQLQuery        string
 	IncludeChildren bool // fetch child issues and roll them into computeTrending
 
@@ -229,10 +234,10 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t simple=%t summary=%t children=%t dueField=%q trendField=%q fieldIDs=%d",
+	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t markdown=%t summary=%t children=%t dueField=%q trendField=%q fieldIDs=%d",
 		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
 		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput,
-		c.SimpleOutput, c.SummaryOutput, c.IncludeChildren,
+		c.MarkdownOutput, c.SummaryOutput, c.IncludeChildren,
 		c.DueDateFieldName, c.TrendingStatusFieldName, len(c.CustomFieldNameToID))
 }
 
@@ -325,13 +330,13 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	logInfo("Fetching issues for configuration: %v", cfg)
 
 	key := CacheKey(cfg, issueKeys)
-	if err := EnsureCacheDir(); err != nil {
+	if err := reportCache.EnsureDir(); err != nil {
 		logWarning("Cache dir unavailable: %v", err)
 	} else {
 		// Check cache first without pruning (pruning does ReadDir+Stat on every file and can be slow).
-		path, err := cachePath(key)
-		if err == nil && CacheValid(path, cacheTTL) {
-			parentIssues, err := ReadCache(path)
+		path, err := reportCache.Path(key)
+		if err == nil && filecache.Valid(path, reportCacheTTL) {
+			parentIssues, err := readIssueCache(path)
 			if err == nil {
 				logInfo("Using cached results at %s.", path)
 				return parentIssues, nil
@@ -347,7 +352,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	client.prepareFieldResolution(cfg)
 
 	// Prune only when we're about to fetch (and possibly write); avoids slow ReadDir+Stat on cache-hit path.
-	_ = PruneCache(cacheTTL)
+	_ = reportCache.Prune(reportCacheTTL)
 
 	// load raw issue data
 	var parentIssues []*IssueData
@@ -386,8 +391,8 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 	}
 
 	// Write cache for next run
-	if path, err := cachePath(key); err == nil {
-		if wErr := WriteCache(path, parentIssues); wErr != nil {
+	if path, err := reportCache.Path(key); err == nil {
+		if wErr := writeIssueCache(path, parentIssues); wErr != nil {
 			logWarning("Failed to write cache: %v", wErr)
 		} else {
 			logDebug("Cached results to %s", path)
@@ -403,8 +408,8 @@ func main() {
 	sinceStr := flag.String("since", "", "Only include issues updated on or after: YYYY-MM-DD, or N (days ago, e.g. 14)")
 	needsUpdate := flag.Int("needs-update", 0, "Exclude issues with a comment in the past N days (0=disabled)")
 	title := flag.String("title", "", "Custom title for the report")
-	outputFile := flag.String("output-file", "", "Write/append the markdown report to this file")
-	outputFileShort := flag.String("o", "", "Write/append the markdown report to this file (short)")
+	outputFile := flag.String("output-file", "", "Write/append report output to this file")
+	outputFileShort := flag.String("o", "", "Write/append report output to this file (short)")
 	individual := flag.Bool("individual", false, "Generate a separate report section for each issue")
 	individualShort := flag.Bool("i", false, "Generate a separate report section for each issue (short)")
 	useStdin := flag.Bool("stdin", false, "Read issue keys from stdin (one per line)")
@@ -415,7 +420,8 @@ func main() {
 	csvOutput := flag.Bool("csv", false, "Output in CSV format ('cat separated value': 🐱)")
 	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
-	simpleOutput := flag.Bool("simple", false, "Output simple text: emoji status key summary (no URLs)")
+	markdownOutput := flag.Bool("markdown", false, "Output full markdown report (table with issue links)")
+	_ = flag.Bool("simple", false, "Optional; simple tab-aligned text is the default (no URLs in output)")
 	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
 	children := flag.Bool("children", false, "Fetch child/linked issues and use them when computing trending")
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
@@ -442,9 +448,9 @@ Environment variables:
 
 Examples:
   snippets PROJECT-123 PROJECT-456
-  snippets --jql "project = MYPROJ AND status != Done"
+  snippets --markdown --jql "project = MYPROJ AND status != Done"
   snippets --children --since 2026-01-01 PROJECT-123
-  snippets --title "Weekly Status" PROJECT-123 PROJECT-456
+  snippets --markdown --title "Weekly Status" PROJECT-123 PROJECT-456
 `)
 	}
 
@@ -569,7 +575,7 @@ Examples:
 		CSVOutput:               *csvOutput,
 		SlackOutput:             *slackOutput,
 		URLOutput:               *urlOutput,
-		SimpleOutput:            *simpleOutput,
+		MarkdownOutput:          *markdownOutput,
 		SummaryOutput:           *summaryOutput,
 		JQLQuery:                *jqlQuery,
 		IncludeChildren:         *children,
