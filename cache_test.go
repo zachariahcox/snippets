@@ -1,10 +1,8 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestCacheKey_deterministic(t *testing.T) {
@@ -48,12 +46,12 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 		},
 	}
 
-	if err := WriteCache(path, parent); err != nil {
-		t.Fatalf("WriteCache: %v", err)
+	if err := writeIssueCache(path, parent); err != nil {
+		t.Fatalf("writeIssueCache: %v", err)
 	}
-	p2, err := ReadCache(path)
+	p2, err := readIssueCache(path)
 	if err != nil {
-		t.Fatalf("ReadCache: %v", err)
+		t.Fatalf("readIssueCache: %v", err)
 	}
 	if len(p2) != 1 || p2[0].Key != "P-1" || p2[0].Summary != "One" {
 		t.Errorf("parent mismatch: got %+v", p2)
@@ -63,29 +61,16 @@ func TestWriteReadCache_roundtrip(t *testing.T) {
 	}
 }
 
-func TestCacheValid(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "x.json")
-	if CacheValid(path, time.Hour) {
-		t.Error("nonexistent file should be invalid")
-	}
-	if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if !CacheValid(path, time.Hour) {
-		t.Error("recent file should be valid")
-	}
-}
-
 // TestFetchReportIssues_usesCache verifies that FetchReportIssues returns cached data when the
 // cache is primed, so tests (and the real binary) can rely on cache hits.
 func TestFetchReportIssues_usesCache(t *testing.T) {
 	dir := t.TempDir()
-	oldFn := cacheDirFn
-	cacheDirFn = func() (string, error) { return dir, nil }
-	defer func() { cacheDirFn = oldFn }()
+	oldFn := reportCacheDirFn
+	reportCacheDirFn = func() (string, error) { return dir, nil }
+	defer func() { reportCacheDirFn = oldFn }()
 
-	if err := EnsureCacheDir(); err != nil {
-		t.Fatalf("EnsureCacheDir: %v", err)
+	if err := reportCache.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
 	}
 
 	cfg := &ReportConfig{
@@ -96,15 +81,15 @@ func TestFetchReportIssues_usesCache(t *testing.T) {
 
 	// Prime the cache with the same key FetchReportIssues would use
 	key := CacheKey(cfg, issueKeys)
-	path, err := cachePath(key)
+	path, err := reportCache.Path(key)
 	if err != nil {
-		t.Fatalf("cachePath: %v", err)
+		t.Fatalf("Path: %v", err)
 	}
 	parent := []*IssueData{
 		{Key: "P-1", Summary: "Cached issue", Status: "done", TrendingEmoji: "🟣"},
 	}
-	if err := WriteCache(path, parent); err != nil {
-		t.Fatalf("WriteCache: %v", err)
+	if err := writeIssueCache(path, parent); err != nil {
+		t.Fatalf("writeIssueCache: %v", err)
 	}
 
 	// FetchReportIssues with nil client should hit the cache

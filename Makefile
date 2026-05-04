@@ -5,7 +5,6 @@ BUILD_DATE := $(shell date "$(DATE_FMT)")
 LD_FLAGS := "-w -s -X 'main.Version=$(VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'"
 BUILD_DIR := $(CURDIR)/build
 INSTALL_DIR := ~/bin
-GO_FILES := $(shell find . -name '*.go' -not -path "./vendor/*")
 OS_ARCHES := linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64
 
 # build these rules even if files with the same name exist.
@@ -25,12 +24,13 @@ build:
 		-tags=netgo \
 		-ldflags=$(LD_FLAGS) \
 		-o $(BUILD_DIR)/$$os_arch/$(BINARY_NAME)$$bin_suffix \
-		$(GO_FILES);\
+		.;\
 	done
 
 test:
 	mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOCACHE=$(BUILD_DIR)/.cache go test -v ./...
+	cd filecache && CGO_ENABLED=0 GOCACHE=$(BUILD_DIR)/.cache go test -v ./...
 
 # build and install the binary
 install: build
