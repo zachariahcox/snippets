@@ -45,5 +45,4 @@ fi
 
 next="v${nmaj}.${nmin}.${npat}"
 echo "Suggested next (${bump}): ${next}"
-echo "git tag -a \"${next}\" -m \"Release ${next}\""
-echo "git push origin \"${next}\""
+echo "git tag -a \"${next}\" -m \"Release ${next}\" && git push origin \"${next}\""
