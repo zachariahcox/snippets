@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -312,6 +313,44 @@ func TestComputeTrending_includeChildren(t *testing.T) {
 			t.Errorf("child Trending = %q, want off track", parent.Children[0].Trending)
 		}
 	})
+}
+
+func TestChildrenJQL_includesHierarchyFieldsWhenResolved(t *testing.T) {
+	c := &JiraClient{
+		customFieldNameToID: map[string]string{
+			defaultEpicLinkFieldName:   "customfield_10001",
+			defaultParentLinkFieldName: "customfield_10002",
+		},
+		customFieldsLoaded: true,
+	}
+	jql := c.childrenJQL("PROJECT-2822")
+	for _, want := range []string{
+		`issue in childIssuesOf(PROJECT-2822)`,
+		`issue in linkedIssues(PROJECT-2822, "is parent of")`,
+		`"Epic Link" = PROJECT-2822`,
+		`"Parent Link" = PROJECT-2822`,
+	} {
+		if !strings.Contains(jql, want) {
+			t.Errorf("childrenJQL missing %q\nfull: %s", want, jql)
+		}
+	}
+}
+
+func TestChildrenJQL_omitsUnresolvedHierarchyFields(t *testing.T) {
+	c := &JiraClient{
+		customFieldNameToID: map[string]string{
+			defaultEpicLinkFieldName:   "",
+			defaultParentLinkFieldName: "",
+		},
+		customFieldsLoaded: true,
+	}
+	jql := c.childrenJQL("PROJECT-1")
+	if strings.Contains(jql, "Epic Link") || strings.Contains(jql, "Parent Link") {
+		t.Errorf("childrenJQL should omit unresolved hierarchy fields: %s", jql)
+	}
+	if !strings.Contains(jql, `issue in childIssuesOf(PROJECT-1)`) {
+		t.Errorf("childrenJQL should always include subtasks: %s", jql)
+	}
 }
 
 // copyMap does a shallow copy of a map for building test variants.

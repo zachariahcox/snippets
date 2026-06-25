@@ -16,6 +16,12 @@ import (
 // defaultJiraConcurrency is used when MaxConcurrent is unset or invalid.
 const defaultJiraConcurrency = 8
 
+// Jira hierarchy custom field display names (issue in childIssuesOf covers sub-tasks).
+const (
+	defaultEpicLinkFieldName   = "Epic Link"
+	defaultParentLinkFieldName = "Parent Link"
+)
+
 // JiraClient is a simple Jira REST API client
 type JiraClient struct {
 	Server     string
@@ -152,6 +158,8 @@ func (c *JiraClient) prepareFieldResolution(cfg *ReportConfig) {
 	}
 	add(c.dueDateFieldName)
 	add(c.trendingStatusFieldName)
+	add(defaultEpicLinkFieldName)
+	add(defaultParentLinkFieldName)
 	c.customFieldsLoaded = false
 }
 
@@ -452,6 +460,22 @@ func (client *JiraClient) FetchIssuesByKeys(issueKeys []string) ([]*IssueData, e
 	return issues, nil
 }
 
+// childrenJQL builds JQL to find child issues: sub-tasks, parent links, epic links, and linked children.
+// Epic Link and Parent Link clauses are included only when those fields resolve on the Jira instance.
+func (c *JiraClient) childrenJQL(parentKey string) string {
+	c.ensureCustomFieldsLoaded()
+	clauses := []string{
+		fmt.Sprintf(`issue in childIssuesOf(%s)`, parentKey),
+		fmt.Sprintf(`issue in linkedIssues(%s, "is parent of")`, parentKey),
+	}
+	for _, fieldName := range []string{defaultEpicLinkFieldName, defaultParentLinkFieldName} {
+		if id := strings.TrimSpace(c.customFieldNameToID[fieldName]); id != "" {
+			clauses = append(clauses, fmt.Sprintf(`"%s" = %s`, fieldName, parentKey))
+		}
+	}
+	return strings.Join(clauses, " OR ")
+}
+
 func (client *JiraClient) loadChildren(parents []*IssueData) {
 	lim := client.concurrencyCap()
 	var wg sync.WaitGroup
@@ -466,7 +490,7 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			jql := fmt.Sprintf(`issue in linkedIssues(%s, "is parent of") or issue in childIssuesOf(%s)`, p.Key, p.Key)
+			jql := client.childrenJQL(p.Key)
 			logInfo("Loading children for %s: %s", p.Key, jql)
 			jsonBlobs, err := client.searchIssues(jql, 1000)
 			if err != nil {
@@ -474,9 +498,18 @@ func (client *JiraClient) loadChildren(parents []*IssueData) {
 				p.Children = nil
 				return
 			}
+			seen := make(map[string]struct{}, len(jsonBlobs))
 			var children []*IssueData
 			for _, blob := range jsonBlobs {
-				children = append(children, client.extractIssueData(blob))
+				child := client.extractIssueData(blob)
+				if child == nil || child.Key == "" {
+					continue
+				}
+				if _, dup := seen[child.Key]; dup {
+					continue
+				}
+				seen[child.Key] = struct{}{}
+				children = append(children, child)
 			}
 			p.Children = children
 			logInfo("  Found %d children for %s", len(children), p.Key)
