@@ -519,13 +519,13 @@ func TestMergeURLReportOrderBy(t *testing.T) {
 	if got := mergeURLReportOrderBy(""); got != "" {
 		t.Errorf("empty: %q", got)
 	}
-	if got := mergeURLReportOrderBy("project = FOO"); got != "project = FOO and order by assignee ASC" {
+	if got := mergeURLReportOrderBy("project = FOO"); got != "project = FOO order by assignee ASC" {
 		t.Errorf("no order: %q", got)
 	}
-	if got := mergeURLReportOrderBy("project = FOO AND ORDER BY updated DESC"); got != "project = FOO AND ORDER BY updated DESC, assignee ASC" {
+	if got := mergeURLReportOrderBy("project = FOO ORDER BY updated DESC"); got != "project = FOO ORDER BY updated DESC, assignee ASC" {
 		t.Errorf("merge: %q", got)
 	}
-	if got := mergeURLReportOrderBy("project = FOO and order by assignee DESC"); got != "project = FOO and order by assignee DESC" {
+	if got := mergeURLReportOrderBy("project = FOO order by assignee DESC"); got != "project = FOO order by assignee DESC" {
 		t.Errorf("assignee already present: %q", got)
 	}
 }
@@ -768,5 +768,79 @@ func TestFilterAndSortIssues_skipsNil(t *testing.T) {
 	}
 	if out[0].Key != "X-1" {
 		t.Errorf("expected X-1, got %s", out[0].Key)
+	}
+}
+
+func TestIssuesForReport_defaultsToParents(t *testing.T) {
+	parents := []*IssueData{
+		{Key: "P-1", Summary: "Parent one"},
+		{Key: "P-2", Summary: "Parent two", Children: []*IssueData{{Key: "C-1"}}},
+	}
+	got := issuesForReport(parents, &ReportConfig{})
+	if len(got) != 2 || got[0].Key != "P-1" || got[1].Key != "P-2" {
+		t.Errorf("expected parents unchanged, got %+v", got)
+	}
+}
+
+func TestIssuesForReport_renderChildren_flattens(t *testing.T) {
+	parents := []*IssueData{
+		{
+			Key: "P-1",
+			Children: []*IssueData{
+				{Key: "C-1", Summary: "Child one"},
+				{Key: "C-2", Summary: "Child two"},
+			},
+		},
+		{
+			Key: "P-2",
+			Children: []*IssueData{
+				{Key: "C-3", Summary: "Child three"},
+			},
+		},
+	}
+	got := issuesForReport(parents, &ReportConfig{RenderChildren: true})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(got))
+	}
+	if got[0].Key != "C-1" || got[1].Key != "C-2" || got[2].Key != "C-3" {
+		t.Errorf("unexpected child order/keys: %+v", got)
+	}
+}
+
+func TestIssuesForReport_renderChildren_noChildren(t *testing.T) {
+	parents := []*IssueData{
+		{Key: "P-1", Summary: "Lonely parent"},
+	}
+	got := issuesForReport(parents, &ReportConfig{RenderChildren: true})
+	if len(got) != 0 {
+		t.Errorf("expected empty slice when parents have no children, got %+v", got)
+	}
+}
+
+func TestRenderReport_renderChildren_usesChildRows(t *testing.T) {
+	parents := []*IssueData{
+		{
+			Key:     "P-1",
+			Summary: "Parent issue",
+			Children: []*IssueData{
+				{
+					Key:           "C-1",
+					Summary:       "Child issue",
+					Status:        "in progress",
+					Type:          "subtask",
+					TrendingEmoji: "🟢",
+					Trending:      "in progress",
+					Updated:       "2025-01-15",
+				},
+			},
+		},
+	}
+	cfg := &ReportConfig{RenderChildren: true}
+	out := RenderSimpleReport(issuesForReport(parents, cfg), cfg)
+	if strings.Contains(out, "P-1") {
+		t.Error("expected parent key to be omitted when rendering children")
+	}
+	if !strings.Contains(out, "C-1") || !strings.Contains(out, "Child issue") {
+		t.Errorf("expected child issue in output, got: %q", out)
 	}
 }

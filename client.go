@@ -185,7 +185,7 @@ func (c *JiraClient) ensureCustomFieldsLoaded() {
 }
 
 // computeTrending computes the trending status for an issue and its children
-func computeTrending(issue *IssueData) {
+func computeTrending(issue *IssueData, includeChildren bool) {
 	if issue.Trending != "" {
 		return // already computed
 	}
@@ -222,11 +222,11 @@ func computeTrending(issue *IssueData) {
 	}
 
 	// consider the children
-	if len(issue.Children) > 0 {
+	if includeChildren && len(issue.Children) > 0 {
 		if trending != "done" && trending != "blocked" && trending != "at risk" && trending != "off track" {
 			for _, child := range issue.Children {
 				// what's their status? (recursive)
-				computeTrending(child)
+				computeTrending(child, includeChildren)
 
 				// if children are in any of the following statuses, set trending to that status
 				for _, t := range []string{"blocked", "off track", "at risk"} {
@@ -242,7 +242,7 @@ func computeTrending(issue *IssueData) {
 			if trending != "done" {
 				allDone := true
 				for _, child := range issue.Children {
-					computeTrending(child)
+					computeTrending(child, includeChildren)
 					if child.Trending != "done" {
 						allDone = false
 						break

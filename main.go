@@ -3,6 +3,7 @@
 // Features:
 //   - Fetch issues by JQL query or direct issue keys.
 //   - Optional --children: load linked/child issues and fold them into trending (default: off).
+//   - Optional --render-children: emit child issues in the report instead of parents (implies --children).
 //   - Derive status from Jira's native status field with emoji decoration.
 //   - Include due date and last update timestamps.
 //   - Filter issues by a minimum last-update date.
@@ -199,18 +200,19 @@ var (
 
 // ReportConfig holds options for report generation
 type ReportConfig struct {
-	Title           string
-	UpdatedAfter    *time.Time
-	NoCommentAfter  *time.Time
-	OutputFile      string
-	JSONOutput      bool
-	CSVOutput       bool
-	SlackOutput     bool
-	URLOutput       bool
+	Title          string
+	UpdatedAfter   *time.Time
+	NoCommentAfter *time.Time
+	OutputFile     string
+	JSONOutput     bool
+	CSVOutput      bool
+	SlackOutput    bool
+	URLOutput      bool
+
 	// MarkdownOutput selects the full markdown issue table (links, columns). When false and no other
 	// structured format is set, RenderReport uses simple text. SummaryOutput is separate markdown.
-	MarkdownOutput bool
-	SummaryOutput  bool
+	MarkdownOutput  bool
+	SummaryOutput   bool
 	JQLQuery        string
 	IncludeChildren bool // fetch child issues and roll them into computeTrending
 
@@ -220,6 +222,8 @@ type ReportConfig struct {
 	TrendingStatusFieldName string
 	// CustomFieldNameToID maps custom field display names to REST field IDs after the client resolves them (filled during fetch).
 	CustomFieldNameToID map[string]string
+
+	RenderChildren bool // render children issues instead of parents
 }
 
 func (c *ReportConfig) String() string {
@@ -234,10 +238,10 @@ func (c *ReportConfig) String() string {
 	if c.NoCommentAfter != nil {
 		noComment = c.NoCommentAfter.Format("2006-01-02")
 	}
-	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t markdown=%t summary=%t children=%t dueField=%q trendField=%q fieldIDs=%d",
+	return fmt.Sprintf("title=%q jql=%q since=%q noCommentAfter=%q out=%q json=%t csv=%t slack=%t url=%t markdown=%t summary=%t children=%t renderChildren=%t dueField=%q trendField=%q fieldIDs=%d",
 		c.Title, c.JQLQuery, since, noComment, c.OutputFile,
 		c.JSONOutput, c.CSVOutput, c.SlackOutput, c.URLOutput,
-		c.MarkdownOutput, c.SummaryOutput, c.IncludeChildren,
+		c.MarkdownOutput, c.SummaryOutput, c.IncludeChildren, c.RenderChildren,
 		c.DueDateFieldName, c.TrendingStatusFieldName, len(c.CustomFieldNameToID))
 }
 
@@ -387,7 +391,7 @@ func FetchReportIssues(client *JiraClient, issueKeys []string, cfg *ReportConfig
 
 	// compute trending
 	for _, issue := range parentIssues {
-		computeTrending(issue)
+		computeTrending(issue, cfg.IncludeChildren)
 	}
 
 	// Write cache for next run
@@ -421,14 +425,13 @@ func main() {
 	slackOutput := flag.Bool("slack", false, "Output as Slack-formatted numbered list")
 	urlOutput := flag.Bool("url", false, "Output a single Jira issues URL with filtered keys as JQL")
 	markdownOutput := flag.Bool("markdown", false, "Output full markdown report (table with issue links)")
-	_ = flag.Bool("simple", false, "Optional; simple tab-aligned text is the default (no URLs in output)")
 	summaryOutput := flag.Bool("summary", false, "Output markdown: counts and percents by status (filtered list)")
 	children := flag.Bool("children", false, "Fetch child/linked issues and use them when computing trending")
 	clearCache := flag.Bool("clear-cache", false, "Clear the cache at ~/.snippets/cache and exit")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	jiraConcurrency := flag.Int("jira-concurrency", 0, "Max parallel Jira API requests (0=use JIRA_CONCURRENCY env or 8)")
 	dueDateFieldFlag := flag.String("due-date-field", "", "Jira custom field display name for due/due date (overrides JIRA_DUE_DATE_FIELD; empty = native Due Date)")
-
+	renderChildrenFlag := flag.Bool("render-children", false, "Render child issues instead of parents")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: snippets [options] <issue_keys...>
 
@@ -578,7 +581,8 @@ Examples:
 		MarkdownOutput:          *markdownOutput,
 		SummaryOutput:           *summaryOutput,
 		JQLQuery:                *jqlQuery,
-		IncludeChildren:         *children,
+		IncludeChildren:         *children || *renderChildrenFlag,
+		RenderChildren:          *renderChildrenFlag,
 		DueDateFieldName:        dueDateFieldName,
 		TrendingStatusFieldName: trendFromEnv,
 	}

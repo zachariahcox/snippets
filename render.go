@@ -14,14 +14,28 @@ import (
 	"time"
 )
 
+// issuesForReport returns the issue slice passed to format-specific renderers.
+// When cfg.RenderChildren is set, child issues from all parents are flattened (parents are omitted).
+func issuesForReport(parentIssues []*IssueData, cfg *ReportConfig) []*IssueData {
+	if cfg == nil || !cfg.RenderChildren {
+		return parentIssues
+	}
+	children := make([]*IssueData, 0)
+	for _, issue := range parentIssues {
+		children = append(children, issue.Children...)
+	}
+	return children
+}
+
 func RenderReport(parentIssues []*IssueData, cfg *ReportConfig) {
 	if cfg == nil || parentIssues == nil {
 		return
 	}
 
+	issuesToRender := issuesForReport(parentIssues, cfg)
+
 	// Render output
 	var outputData string
-	issuesToRender := parentIssues
 	if cfg.JSONOutput {
 		outputData = RenderJSONReport(issuesToRender, cfg)
 	} else if cfg.CSVOutput {
@@ -367,7 +381,7 @@ func mergeURLReportOrderBy(jql string) string {
 	main, orderClause := splitJQLOrderBy(jql)
 	if orderClause == "" {
 		// add new order clause
-		return jql + " and order by " + urlReportOrderByAssignee
+		return jql + " order by " + urlReportOrderByAssignee
 	}
 	if jqlOrderByContainsAssignee.MatchString(orderClause) {
 		// assignee already in order clause, do not modify
@@ -396,6 +410,9 @@ func RenderURLReport(issues []*IssueData, cfg *ReportConfig) string {
 
 	var jql string
 	switch {
+	case cfg.RenderChildren:
+		// too complicated. just render the issue list.
+		jql = mergeURLReportOrderBy(jqlIssueKeysClause(issues))
 	case cfg.NoCommentAfter != nil:
 		jql = mergeURLReportOrderBy(jqlWithUpdatedSince(jqlIssueKeysClause(issues), cfg.UpdatedAfter))
 	case strings.TrimSpace(cfg.JQLQuery) != "":

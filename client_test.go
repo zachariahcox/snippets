@@ -31,7 +31,7 @@ func TestExtractIssueData(t *testing.T) {
 		},
 	}
 	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.Key != "PROJ-1" {
 		t.Errorf("Key = %q, want PROJ-1", data.Key)
 	}
@@ -77,7 +77,7 @@ func TestExtractIssueData_missingFields(t *testing.T) {
 		},
 	}
 	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.Key != "PROJ-2" {
 		t.Errorf("Key = %q, want PROJ-2", data.Key)
 	}
@@ -123,7 +123,7 @@ func TestExtractIssueData_trendingAndEmoji(t *testing.T) {
 		fields := issue["fields"].(map[string]any)
 		fields["status"] = map[string]any{"name": tt.statusName}
 		data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
-		computeTrending(data)
+		computeTrending(data, false)
 		if data.Trending != tt.wantTrending {
 			t.Errorf("status %q: Trending: Actual = %q, Expected %q", tt.statusName, data.Trending, tt.wantTrending)
 		}
@@ -163,7 +163,7 @@ func TestExtractIssueData_overdue(t *testing.T) {
 		},
 	}
 	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.TrendingEmoji != "🟢" {
 		t.Errorf("without target end: Emoji = %q, want 🟢", data.TrendingEmoji)
 	}
@@ -181,7 +181,7 @@ func TestExtractIssueData_overdue(t *testing.T) {
 	}
 	cfg := &ReportConfig{DueDateFieldName: dueName}
 	dataResolved := testJiraClientForExtract(cfg, cf).extractIssueData(resolvedIssue)
-	computeTrending(dataResolved)
+	computeTrending(dataResolved, false)
 	if dataResolved.Trending != "done" || dataResolved.TrendingEmoji != "🟣" {
 		t.Errorf("resolved issue (past target): Trending=%q Emoji=%q, want done/🟣", dataResolved.Trending, dataResolved.TrendingEmoji)
 	}
@@ -204,7 +204,7 @@ func TestExtractIssueData_atRisk(t *testing.T) {
 	}
 	cfg := &ReportConfig{DueDateFieldName: dueName}
 	data := testJiraClientForExtract(cfg, cf).extractIssueData(issue)
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.Trending != "at risk" {
 		t.Errorf("not started + due tomorrow: Trending = %q, want at risk", data.Trending)
 	}
@@ -231,7 +231,7 @@ func TestExtractIssueData_trendingFromJiraField(t *testing.T) {
 	if data.Trending != "off track" || data.TrendingEmoji != "🔴" {
 		t.Errorf("Trending=%q Emoji=%q, want off track/🔴", data.Trending, data.TrendingEmoji)
 	}
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.Trending != "off track" {
 		t.Errorf("computeTrending should not override Jira trending: got %q", data.Trending)
 	}
@@ -246,13 +246,72 @@ func TestExtractIssueData_statusNormalized(t *testing.T) {
 		},
 	}
 	data := testJiraClientForExtract(nil, nil).extractIssueData(issue)
-	computeTrending(data)
+	computeTrending(data, false)
 	if data.Status != "in progress" {
 		t.Errorf("Status = %q, want 'in progress'", data.Status)
 	}
 	if data.Trending != "on track" {
 		t.Errorf("Trending = %q, want 'on track'", data.Trending)
 	}
+}
+
+func TestComputeTrending_includeChildren(t *testing.T) {
+	parentWithResolvedChildren := func() *IssueData {
+		return &IssueData{
+			Key:    "P-1",
+			Status: "in progress",
+			Children: []*IssueData{
+				{Key: "C-1", Status: "resolved"},
+				{Key: "C-2", Status: "resolved"},
+			},
+		}
+	}
+
+	t.Run("false leaves children uncomputed and parent on track", func(t *testing.T) {
+		parent := parentWithResolvedChildren()
+		computeTrending(parent, false)
+		if parent.Trending != "on track" {
+			t.Errorf("parent Trending = %q, want on track", parent.Trending)
+		}
+		for _, child := range parent.Children {
+			if child.Trending != "" {
+				t.Errorf("child %s Trending = %q, want empty when includeChildren is false", child.Key, child.Trending)
+			}
+		}
+	})
+
+	t.Run("true computes children and rolls up when all done", func(t *testing.T) {
+		parent := parentWithResolvedChildren()
+		computeTrending(parent, true)
+		if parent.Trending != "done" {
+			t.Errorf("parent Trending = %q, want done", parent.Trending)
+		}
+		if parent.TrendingComment != "All children are done. What's left?" {
+			t.Errorf("parent TrendingComment = %q, want all-children-done message", parent.TrendingComment)
+		}
+		for _, child := range parent.Children {
+			if child.Trending != "done" || child.TrendingEmoji != "🟣" {
+				t.Errorf("child %s trending = %q emoji = %q, want done/🟣", child.Key, child.Trending, child.TrendingEmoji)
+			}
+		}
+	})
+
+	t.Run("true propagates child off track to parent", func(t *testing.T) {
+		parent := &IssueData{
+			Key:    "P-1",
+			Status: "in progress",
+			Children: []*IssueData{
+				{Key: "C-1", Status: "blocked"},
+			},
+		}
+		computeTrending(parent, true)
+		if parent.Trending != "off track" {
+			t.Errorf("parent Trending = %q, want off track", parent.Trending)
+		}
+		if parent.Children[0].Trending != "off track" {
+			t.Errorf("child Trending = %q, want off track", parent.Children[0].Trending)
+		}
+	})
 }
 
 // copyMap does a shallow copy of a map for building test variants.
